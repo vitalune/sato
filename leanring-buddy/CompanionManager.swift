@@ -485,8 +485,13 @@ final class CompanionManager: ObservableObject {
         _ = claudeAPI
 
         // Preload all sprite GIF frames at launch so animation playback
-        // never hitches waiting on disk I/O.
-        spriteAnimationManager.preloadAllAnimations()
+        // never hitches waiting on disk I/O. Restore saved sprite preference.
+        let savedSpriteDirectory = UserDefaults.standard.string(forKey: "activeSpriteDirectory") ?? "max-animations"
+        if savedSpriteDirectory != "max-animations" {
+            spriteAnimationManager.switchSpriteAssets(directoryName: savedSpriteDirectory)
+        } else {
+            spriteAnimationManager.preloadAllAnimations()
+        }
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions

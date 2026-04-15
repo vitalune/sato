@@ -9,7 +9,7 @@
 import Foundation
 
 /// The types of sprite animation. Each type corresponds to a subfolder
-/// (or file) in the pet-animations bundle directory.
+/// (or file) in the max-animations bundle directory.
 enum SpriteAnimationType {
     case idle
     case walking

@@ -176,10 +176,16 @@ final class SpriteAnimationManager: ObservableObject {
 
     // MARK: - GIF Asset Filename Map
 
+    /// Which sprite directory is currently active.
+    private(set) var activeSpriteDirectory: String = "max-animations"
+
     /// Maps (animationType, direction) to the exact GIF filename (without extension).
     /// Only includes directions that have a native asset file — mirrored directions
     /// are synthesized at preload time from their source direction.
-    private static let assetFileNames: [SpriteAnimationType: [SpriteDirection: String]] = [
+    /// Swapped when switching sprites via `switchSpriteAssets(directoryName:)`.
+    private var assetFileNames: [SpriteAnimationType: [SpriteDirection: String]] = SpriteAnimationManager.maxAssetFileNames
+
+    private static let maxAssetFileNames: [SpriteAnimationType: [SpriteDirection: String]] = [
         .idle: [
             .south:     "Cute_Samoyed_dog_small_fluffy_white_body_round_fri_idle_south",
             .southEast: "Cute_Samoyed_dog_small_fluffy_white_body_round_fri_idle_south-east",
@@ -205,16 +211,20 @@ final class SpriteAnimationManager: ObservableObject {
         ],
     ]
 
-    /// Maps animation type to the bundle subdirectory containing its GIFs.
-    /// The separate pet-animations PBXFileSystemSynchronizedRootGroup copies
-    /// all GIFs flat into the bundle's Resources/ root (no subdirectories).
-    private static let assetSubdirectories: [SpriteAnimationType: String?] = [
-        .idle:             nil,
-        .walking:          nil,
-        .flying:           nil,
-        .bark:             nil,
-        .messageDelivered: nil,
-    ]
+    /// Sky (tabby cat) uses simpler filenames and a single idle GIF for all directions.
+    private static var skyAssetFileNames: [SpriteAnimationType: [SpriteDirection: String]] {
+        var allDirectionsIdle: [SpriteDirection: String] = [:]
+        for direction in SpriteDirection.allCases {
+            allDirectionsIdle[direction] = "idle"
+        }
+        return [
+            .idle: allDirectionsIdle,
+            .walking: [.east: "walk-east", .west: "walk-west"],
+            .flying: [.northEast: "jump-east", .southWest: "jump-west"],
+            .bark: [.south: "lick"],
+            .messageDelivered: allDirectionsIdle,
+        ]
+    }
 
     // MARK: - Preloading
 
@@ -226,14 +236,13 @@ final class SpriteAnimationManager: ObservableObject {
             preloadedFrames[animationType] = [:]
             preloadedFrameDurations[animationType] = [:]
 
-            guard let fileNames = Self.assetFileNames[animationType] else { continue }
-            let subdirectory = Self.assetSubdirectories[animationType] ?? nil
+            guard let fileNames = assetFileNames[animationType] else { continue }
 
             // Load native assets
             for (direction, fileName) in fileNames {
                 let (frames, durations) = extractFramesFromGIF(
                     resourceName: fileName,
-                    subdirectory: subdirectory,
+                    subdirectory: nil,
                     flipHorizontally: false
                 )
                 if frames.isEmpty {
@@ -253,12 +262,12 @@ final class SpriteAnimationManager: ObservableObject {
                 // Only generate if the resolution says to flip (otherwise it would
                 // point to an existing direction which we already loaded)
                 guard resolved.flipHorizontally else { continue }
-                guard let sourceFileNames = Self.assetFileNames[animationType],
+                guard let sourceFileNames = assetFileNames[animationType],
                       let sourceFileName = sourceFileNames[resolved.sourceDirection] else { continue }
 
                 let (frames, durations) = extractFramesFromGIF(
                     resourceName: sourceFileName,
-                    subdirectory: subdirectory,
+                    subdirectory: nil,
                     flipHorizontally: true
                 )
                 if frames.isEmpty {
@@ -276,6 +285,25 @@ final class SpriteAnimationManager: ObservableObject {
 
         let messageDeliveredFrameCount = preloadedFrames[.messageDelivered]?.values.first?.count ?? 0
         print("🐕 Sprite: message-delivered loaded: \(messageDeliveredFrameCount) frames")
+    }
+
+    /// Switches the sprite to a different animation directory. Clears all cached
+    /// frames, rebuilds the filename map, reloads animations, and restarts patrol.
+    func switchSpriteAssets(directoryName: String) {
+        activeSpriteDirectory = directoryName
+
+        if directoryName == "sky-animations" {
+            assetFileNames = Self.skyAssetFileNames
+        } else {
+            assetFileNames = Self.maxAssetFileNames
+        }
+
+        preloadedFrames.removeAll()
+        preloadedFrameDurations.removeAll()
+        preloadAllAnimations()
+
+        // Reset to idle so the new sprite is immediately visible
+        setAnimation(type: .idle, direction: .south)
     }
 
     // MARK: - GIF Frame Extraction
