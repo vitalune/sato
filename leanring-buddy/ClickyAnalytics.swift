@@ -74,27 +74,6 @@ enum ClickyAnalytics {
         PostHogSDK.shared.capture("push_to_talk_started")
     }
 
-    /// User released the shortcut — transcript is being finalized.
-    static func trackPushToTalkReleased() {
-        PostHogSDK.shared.capture("push_to_talk_released")
-    }
-
-    /// Transcription completed and the user's message is being sent to the AI.
-    static func trackUserMessageSent(transcript: String) {
-        PostHogSDK.shared.capture("user_message_sent", properties: [
-            "transcript": transcript,
-            "character_count": transcript.count
-        ])
-    }
-
-    /// Claude responded and the response is being spoken via TTS.
-    static func trackAIResponseReceived(response: String) {
-        PostHogSDK.shared.capture("ai_response_received", properties: [
-            "response": response,
-            "character_count": response.count
-        ])
-    }
-
     /// Claude's response included a [POINT:x,y:label] coordinate tag,
     /// so the buddy is flying to point at a UI element.
     static func trackElementPointed(elementLabel: String?) {
@@ -105,17 +84,4 @@ enum ClickyAnalytics {
 
     // MARK: - Errors
 
-    /// An error occurred during the AI response pipeline.
-    static func trackResponseError(error: String) {
-        PostHogSDK.shared.capture("response_error", properties: [
-            "error": error
-        ])
-    }
-
-    /// An error occurred during TTS playback.
-    static func trackTTSError(error: String) {
-        PostHogSDK.shared.capture("tts_error", properties: [
-            "error": error
-        ])
-    }
 }

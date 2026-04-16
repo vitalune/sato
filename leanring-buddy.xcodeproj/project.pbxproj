@@ -74,6 +74,21 @@
 			path = "sky-animations";
 			sourceTree = "<group>";
 		};
+		49F87D242F91502700574198 /* lexi-animations */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "lexi-animations";
+			sourceTree = "<group>";
+		};
+		49F87D332F9150EF00574198 /* rover-animations */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "rover-animations";
+			sourceTree = "<group>";
+		};
+		49F87D422F915EAE00574198 /* paris-animations */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "paris-animations";
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -106,6 +121,9 @@
 		28F22CB62F56440300A0FC59 = {
 			isa = PBXGroup;
 			children = (
+				49F87D422F915EAE00574198 /* paris-animations */,
+				49F87D332F9150EF00574198 /* rover-animations */,
+				49F87D242F91502700574198 /* lexi-animations */,
 				49F87CEE2F903E2500574198 /* sky-animations */,
 				49F87A9B2F8DC10900574198 /* max-animations */,
 				28F22CC12F56440300A0FC59 /* leanring-buddy */,
@@ -144,6 +162,9 @@
 				28F22CC12F56440300A0FC59 /* leanring-buddy */,
 				49F87A9B2F8DC10900574198 /* max-animations */,
 				49F87CEE2F903E2500574198 /* sky-animations */,
+				49F87D242F91502700574198 /* lexi-animations */,
+				49F87D332F9150EF00574198 /* rover-animations */,
+				49F87D422F915EAE00574198 /* paris-animations */,
 			);
 			name = "leanring-buddy";
 			packageProductDependencies = (

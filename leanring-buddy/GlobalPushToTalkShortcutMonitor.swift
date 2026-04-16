@@ -14,9 +14,16 @@ import Combine
 import CoreGraphics
 import Foundation
 
+/// Shortcut transition states for the Ctrl+Option hotkey.
+enum ShortcutTransition {
+    case pressed
+    case released
+    case none
+}
+
 final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// Publisher for Ctrl+Option press/release transitions.
-    let shortcutTransitionPublisher = PassthroughSubject<BuddyPushToTalkShortcut.ShortcutTransition, Never>()
+    let shortcutTransitionPublisher = PassthroughSubject<ShortcutTransition, Never>()
 
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
@@ -31,7 +38,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     func start() {
         // If the event tap is already running, don't restart it.
         // Restarting resets isShortcutCurrentlyPressed, which would kill
-        // the waveform overlay mid-press when the permission poller calls
+        // the overlay mid-press when the permission poller calls
         // refreshAllPermissions → start() every few seconds.
         guard globalEventTap == nil else { return }
 
@@ -109,15 +116,9 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             return Unmanaged.passUnretained(event)
         }
 
-        let eventKeyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-        let modifierFlags = NSEvent.ModifierFlags(rawValue: UInt(event.flags.rawValue))
-            .intersection(.deviceIndependentFlagsMask)
-
-        // Ctrl+Option press/release detection for the assist flow
-        let shortcutTransition = BuddyPushToTalkShortcut.shortcutTransition(
-            for: eventType,
-            keyCode: eventKeyCode,
-            modifierFlagsRawValue: event.flags.rawValue,
+        let shortcutTransition = Self.detectShortcutTransition(
+            eventType: eventType,
+            event: event,
             wasShortcutPreviouslyPressed: isShortcutCurrentlyPressed
         )
 
@@ -133,5 +134,29 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         }
 
         return Unmanaged.passUnretained(event)
+    }
+
+    /// Determines the Ctrl+Option shortcut transition based on the current event.
+    /// Returns `.pressed` when both Ctrl and Option are held down, `.released`
+    /// when they were previously pressed and at least one is now released.
+    private static func detectShortcutTransition(
+        eventType: CGEventType,
+        event: CGEvent,
+        wasShortcutPreviouslyPressed: Bool
+    ) -> ShortcutTransition {
+        guard eventType == .flagsChanged else { return .none }
+
+        let flags = event.flags
+        let controlPressed = flags.contains(.maskControl)
+        let optionPressed = flags.contains(.maskAlternate)
+        let bothPressed = controlPressed && optionPressed
+
+        if bothPressed && !wasShortcutPreviouslyPressed {
+            return .pressed
+        } else if !bothPressed && wasShortcutPreviouslyPressed {
+            return .released
+        }
+
+        return .none
     }
 }

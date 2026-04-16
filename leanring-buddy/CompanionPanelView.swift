@@ -7,7 +7,6 @@
 //  like Loom's recording panel — dark, rounded, minimal, and special.
 //
 
-import AVFoundation
 import SwiftUI
 
 struct CompanionPanelView: View {
@@ -46,12 +45,6 @@ struct CompanionPanelView: View {
                     .frame(height: 8)
 
                 spritePickerRow
-                    .padding(.horizontal, 16)
-
-                Spacer()
-                    .frame(height: 8)
-
-                ioModePickerRow
                     .padding(.horizontal, 16)
 
                 Spacer()
@@ -313,8 +306,6 @@ struct CompanionPanelView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.bottom, 6)
 
-            microphonePermissionRow
-
             accessibilityPermissionRow
 
             screenRecordingPermissionRow
@@ -499,61 +490,6 @@ struct CompanionPanelView: View {
         .padding(.vertical, 6)
     }
 
-    private var microphonePermissionRow: some View {
-        let isGranted = companionManager.hasMicrophonePermission
-        return HStack {
-            HStack(spacing: 8) {
-                Image(systemName: "mic")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(isGranted ? DS.Colors.textTertiary : DS.Colors.warning)
-                    .frame(width: 16)
-
-                Text("Microphone")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
-            }
-
-            Spacer()
-
-            if isGranted {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(DS.Colors.success)
-                        .frame(width: 6, height: 6)
-                    Text("Granted")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(DS.Colors.success)
-                }
-            } else {
-                Button(action: {
-                    // Triggers the native macOS microphone permission dialog on
-                    // first attempt. If already denied, opens System Settings.
-                    let status = AVCaptureDevice.authorizationStatus(for: .audio)
-                    if status == .notDetermined {
-                        AVCaptureDevice.requestAccess(for: .audio) { _ in }
-                    } else {
-                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
-                }) {
-                    Text("Grant")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(DS.Colors.textOnAccent)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(
-                            Capsule()
-                                .fill(DS.Colors.accent)
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-            }
-        }
-        .padding(.vertical, 6)
-    }
-
     private func permissionRow(
         label: String,
         iconName: String,
@@ -664,28 +600,6 @@ struct CompanionPanelView: View {
         .padding(.vertical, 4)
     }
 
-    private var speechToTextProviderRow: some View {
-        HStack {
-            HStack(spacing: 8) {
-                Image(systemName: "mic.badge.waveform")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .frame(width: 16)
-
-                Text("Speech to Text")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
-            }
-
-            Spacer()
-
-            Text(companionManager.buddyDictationManager.transcriptionProviderDisplayName)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(DS.Colors.textTertiary)
-        }
-        .padding(.vertical, 4)
-    }
-
     // MARK: - Model Picker
 
     private var modelPickerRow: some View {
@@ -744,6 +658,9 @@ struct CompanionPanelView: View {
             HStack(spacing: 0) {
                 spriteOptionButton(label: "Max", directoryName: "max-animations")
                 spriteOptionButton(label: "Sky", directoryName: "sky-animations")
+                spriteOptionButton(label: "Lexi", directoryName: "lexi-animations")
+                spriteOptionButton(label: "Rover", directoryName: "rover-animations")
+                spriteOptionButton(label: "Paris", directoryName: "paris-animations")
             }
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -777,57 +694,12 @@ struct CompanionPanelView: View {
         .pointerCursor()
     }
 
-    // MARK: - I/O Mode Picker
-
-    private var ioModePickerRow: some View {
-        HStack {
-            Text("I/O Mode")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
-
-            Spacer()
-
-            HStack(spacing: 0) {
-                ioModeOptionButton(mode: .textToText)
-                ioModeOptionButton(mode: .voiceToVoice)
-            }
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-            )
-        }
-        .padding(.vertical, 4)
-    }
-
-    private func ioModeOptionButton(mode: IOMode) -> some View {
-        let isSelected = companionManager.selectedIOMode == mode
-        return Button(action: {
-            companionManager.setSelectedIOMode(mode)
-        }) {
-            Text(mode.displayName)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
-                )
-        }
-        .buttonStyle(.plain)
-        .pointerCursor()
-    }
-
     // MARK: - API Key
 
     private var apiKeyRow: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("API Key")
+                Text("Anthropic API Key")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
 
@@ -1340,14 +1212,7 @@ struct CompanionPanelView: View {
         if !companionManager.isOverlayVisible {
             return DS.Colors.textTertiary
         }
-        switch companionManager.voiceState {
-        case .idle:
-            return DS.Colors.success
-        case .listening:
-            return DS.Colors.blue400
-        case .processing, .responding:
-            return DS.Colors.blue400
-        }
+        return DS.Colors.success
     }
 
     private var statusText: String {
@@ -1357,16 +1222,7 @@ struct CompanionPanelView: View {
         if !companionManager.isOverlayVisible {
             return "Ready"
         }
-        switch companionManager.voiceState {
-        case .idle:
-            return "Active"
-        case .listening:
-            return "Listening"
-        case .processing:
-            return "Processing"
-        case .responding:
-            return "Responding"
-        }
+        return "Active"
     }
 
 }

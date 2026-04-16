@@ -2,9 +2,8 @@
 //  CompanionManager.swift
 //  leanring-buddy
 //
-//  Central state manager for the companion voice mode. Owns the push-to-talk
-//  pipeline (dictation manager + global shortcut monitor + overlay) and
-//  exposes observable voice state for the panel UI.
+//  Central state manager for the companion. Owns the global shortcut monitor,
+//  overlay, sprite system, and text-based AI assist pipeline.
 //
 
 import AVFoundation
@@ -13,13 +12,6 @@ import Foundation
 import PostHog
 import ScreenCaptureKit
 import SwiftUI
-
-enum CompanionVoiceState {
-    case idle
-    case listening
-    case processing
-    case responding
-}
 
 /// Phases of the text-based assist interaction flow.
 /// Drives the overlay UI: screenshot selection → text input → speech bubble.
@@ -52,12 +44,8 @@ enum ChatSidebarMessageRole {
 
 @MainActor
 final class CompanionManager: ObservableObject {
-    @Published private(set) var voiceState: CompanionVoiceState = .idle
-    @Published private(set) var lastTranscript: String?
-    @Published private(set) var currentAudioPowerLevel: CGFloat = 0
     @Published private(set) var hasAccessibilityPermission = false
     @Published private(set) var hasScreenRecordingPermission = false
-    @Published private(set) var hasMicrophonePermission = false
     @Published private(set) var hasScreenContentPermission = false
 
     /// Screen location (global AppKit coords) of a detected UI element the
@@ -289,22 +277,6 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    // MARK: - I/O Mode
-
-    /// The current input/output mode. Persisted to UserDefaults.
-    @Published var selectedIOMode: IOMode = {
-        if let raw = UserDefaults.standard.string(forKey: "selectedIOMode"),
-           let mode = IOMode(rawValue: raw) {
-            return mode
-        }
-        return .textToText
-    }()
-
-    func setSelectedIOMode(_ mode: IOMode) {
-        selectedIOMode = mode
-        UserDefaults.standard.set(mode.rawValue, forKey: "selectedIOMode")
-    }
-
     /// Whether the user has stored an Anthropic API key in the Keychain.
     @Published var hasAnthropicAPIKey: Bool = KeychainHelper.loadAnthropicAPIKey() != nil
 
@@ -339,7 +311,6 @@ final class CompanionManager: ObservableObject {
     private var onboardingMusicPlayer: AVAudioPlayer?
     private var onboardingMusicFadeTimer: Timer?
 
-    let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
     let spriteAnimationManager = SpriteAnimationManager()
@@ -351,18 +322,6 @@ final class CompanionManager: ObservableObject {
     }
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
-
-    /// Base URL for the Cloudflare Worker proxy. All API requests route
-    /// through this so keys never ship in the app binary.
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
-
-    private lazy var claudeAPI: ClaudeAPI = {
-        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
-    }()
-
-    private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
-        return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
-    }()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
     /// Each entry is the user's transcript and Claude's response.
@@ -390,31 +349,28 @@ final class CompanionManager: ObservableObject {
     private var currentResponseTask: Task<Void, Never>?
 
     private var shortcutTransitionCancellable: AnyCancellable?
-    private var voiceStateCancellable: AnyCancellable?
-    private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
 
-    /// True when all three required permissions (accessibility, screen recording,
-    /// microphone) are granted. Used by the panel to show a single "all good" state.
+    /// True when all required permissions (accessibility, screen recording,
+    /// screen content) are granted. Used by the panel to show a single "all good" state.
     var allPermissionsGranted: Bool {
-        hasAccessibilityPermission && hasScreenRecordingPermission && hasMicrophonePermission && hasScreenContentPermission
+        hasAccessibilityPermission && hasScreenRecordingPermission && hasScreenContentPermission
     }
 
     /// Whether the blue cursor overlay is currently visible on screen.
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
 
-    /// The Claude model used for voice responses. Persisted to UserDefaults.
+    /// The Claude model used for responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
 
     func setSelectedModel(_ model: String) {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
-        claudeAPI.model = model
     }
 
     /// When enabled, the Samoyed sprite is hidden but the AI assistant
@@ -475,14 +431,9 @@ final class CompanionManager: ObservableObject {
 
     func start() {
         refreshAllPermissions()
-        print("🔑 Sato start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
+        print("🔑 Sato start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
-        bindVoiceStateObservation()
-        bindAudioPowerLevel()
         bindShortcutTransitions()
-        // Eagerly touch the Claude API so its TLS warmup handshake completes
-        // well before the onboarding demo fires at ~40s into the video.
-        _ = claudeAPI
 
         // Preload all sprite GIF frames at launch so animation playback
         // never hitches waiting on disk I/O. Restore saved sprite preference.
@@ -613,7 +564,6 @@ final class CompanionManager: ObservableObject {
 
     func stop() {
         globalPushToTalkShortcutMonitor.stop()
-        buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
         spriteAnimationManager.stopAnimationTimer()
         transientHideTask?.cancel()
@@ -622,8 +572,6 @@ final class CompanionManager: ObservableObject {
         currentResponseTask?.cancel()
         currentResponseTask = nil
         shortcutTransitionCancellable?.cancel()
-        voiceStateCancellable?.cancel()
-        audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
     }
@@ -631,7 +579,6 @@ final class CompanionManager: ObservableObject {
     func refreshAllPermissions() {
         let previouslyHadAccessibility = hasAccessibilityPermission
         let previouslyHadScreenRecording = hasScreenRecordingPermission
-        let previouslyHadMicrophone = hasMicrophonePermission
         let previouslyHadAll = allPermissionsGranted
 
         let currentlyHasAccessibility = WindowPositionManager.hasAccessibilityPermission()
@@ -645,14 +592,10 @@ final class CompanionManager: ObservableObject {
 
         hasScreenRecordingPermission = WindowPositionManager.hasScreenRecordingPermission()
 
-        let micAuthStatus = AVCaptureDevice.authorizationStatus(for: .audio)
-        hasMicrophonePermission = micAuthStatus == .authorized
-
         // Debug: log permission state on changes
         if previouslyHadAccessibility != hasAccessibilityPermission
-            || previouslyHadScreenRecording != hasScreenRecordingPermission
-            || previouslyHadMicrophone != hasMicrophonePermission {
-            print("🔑 Permissions — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission)")
+            || previouslyHadScreenRecording != hasScreenRecordingPermission {
+            print("🔑 Permissions — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), screenContent: \(hasScreenContentPermission)")
         }
 
         // Track individual permission grants as they happen
@@ -661,9 +604,6 @@ final class CompanionManager: ObservableObject {
         }
         if !previouslyHadScreenRecording && hasScreenRecordingPermission {
             ClickyAnalytics.trackPermissionGranted(permission: "screen_recording")
-        }
-        if !previouslyHadMicrophone && hasMicrophonePermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "microphone")
         }
         // Screen content permission is persisted — once the user has approved the
         // SCShareableContent picker, we don't need to re-check it.
@@ -728,17 +668,6 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Private
 
-    /// Triggers the system microphone prompt if the user has never been asked.
-    /// Once granted/denied the status sticks and polling picks it up.
-    private func promptForMicrophoneIfNotDetermined() {
-        guard AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined else { return }
-        AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
-            Task { @MainActor [weak self] in
-                self?.hasMicrophonePermission = granted
-            }
-        }
-    }
-
     /// Polls all permissions frequently so the UI updates live after the
     /// user grants them in System Settings. Screen Recording is the exception —
     /// macOS requires an app restart for that one to take effect.
@@ -748,48 +677,6 @@ final class CompanionManager: ObservableObject {
                 self?.refreshAllPermissions()
             }
         }
-    }
-
-    private func bindAudioPowerLevel() {
-        audioPowerCancellable = buddyDictationManager.$currentAudioPowerLevel
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] powerLevel in
-                self?.currentAudioPowerLevel = powerLevel
-            }
-    }
-
-    private func bindVoiceStateObservation() {
-        voiceStateCancellable = buddyDictationManager.$isRecordingFromKeyboardShortcut
-            .combineLatest(
-                buddyDictationManager.$isFinalizingTranscript,
-                buddyDictationManager.$isPreparingToRecord
-            )
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] isRecording, isFinalizing, isPreparing in
-                guard let self else { return }
-                // Don't override .responding — the AI response pipeline
-                // manages that state directly until streaming finishes.
-                guard self.voiceState != .responding else { return }
-
-                if isFinalizing {
-                    self.voiceState = .processing
-                } else if isRecording {
-                    self.voiceState = .listening
-                } else if isPreparing {
-                    self.voiceState = .processing
-                } else {
-                    self.voiceState = .idle
-                    // If the user pressed and released the hotkey without
-                    // saying anything, no response task runs — schedule the
-                    // transient hide here so the overlay doesn't get stuck.
-                    // Only do this when no response is in flight, otherwise
-                    // the brief idle gap between recording and processing
-                    // would prematurely hide the overlay.
-                    if self.currentResponseTask == nil {
-                        self.scheduleTransientHideIfNeeded()
-                    }
-                }
-            }
     }
 
     private func bindShortcutTransitions() {
@@ -1029,7 +916,7 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
+    private func handleShortcutTransition(_ transition: ShortcutTransition) {
         switch transition {
         case .pressed:
             // Don't register while the onboarding video is playing
@@ -1055,43 +942,14 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Companion Prompt
 
-    private static let companionVoiceResponseSystemPrompt = """
-    you're sato, a friendly always-on companion that lives on the user's desktop as a friendly Samoyed dog. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
-
-    rules:
-    - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
-    - all lowercase, casual, warm. no emojis.
-    - write for the ear, not the eye. short sentences. no lists, bullet points, markdown, or formatting — just natural speech.
-    - don't use abbreviations or symbols that sound weird read aloud. write "for example" not "e.g.", spell out small numbers.
-    - if the user's question relates to what's on their screen, reference specific things you see.
-    - if the screenshot doesn't seem relevant to their question, just answer the question directly.
-    - you can help with anything — coding, writing, general knowledge, brainstorming.
-    - never say "simply" or "just".
-    - don't read out code verbatim. describe what the code does or what needs to change conversationally.
-    - focus on giving a thorough, useful explanation. don't end with simple yes/no questions like "want me to explain more?" or "should i show you?" — those are dead ends that force the user to just say yes.
-    - instead, when it fits naturally, end by planting a seed — mention something bigger or more ambitious they could try, a related concept that goes deeper, or a next-level technique that builds on what you just explained. make it something worth coming back for, not a question they'd just nod to. it's okay to not end with anything extra if the answer is complete on its own.
-    - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
-
-    element pointing:
-    you have a small blue triangle cursor that can fly to and point at things on screen. use it whenever pointing would genuinely help the user — if they're asking how to do something, looking for a menu, trying to find a button, or need help navigating an app, point at the relevant element. err on the side of pointing rather than not pointing, because it makes your help way more useful and concrete.
-
-    don't point at things when it would be pointless — like if the user asks a general knowledge question, or the conversation has nothing to do with what's on screen, or you'd just be pointing at something obvious they're already looking at. but if there's a specific UI element, menu, button, or area on screen that's relevant to what you're helping with, point at it.
-
-    when you point, append a coordinate tag at the very end of your response, AFTER your spoken text. the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. the origin (0,0) is the top-left corner of the image. x increases rightward, y increases downward.
-
-    format: [POINT:x,y:label] where x,y are integer pixel coordinates in the screenshot's coordinate space, and label is a short 1-3 word description of the element (like "search bar" or "save button"). if the element is on the cursor's screen you can omit the screen number. if the element is on a DIFFERENT screen, append :screenN where N is the screen number from the image label (e.g. :screen2). this is important — without the screen number, the cursor will point at the wrong place.
-
-    if pointing wouldn't help, append [POINT:none].
-
-    examples:
-    - user asks how to color grade in final cut: "you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector]"
-    - user asks what html is: "html stands for hypertext markup language, it's basically the skeleton of every web page. curious how it connects to the css you're looking at? [POINT:none]"
-    - user asks how to commit in xcode: "see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control]"
-    - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
-    """
-
     private static let textModeSystemPrompt = """
-    You are Sato, a helpful AI assistant that lives on the user's desktop as a friendly Samoyed dog companion. You can see a selected region of the user's screen. Be concise and helpful. Keep responses under 200 words unless the user asks for more detail.
+    You are Sato, a helpful AI desktop companion. The user has selected a specific region of their screen to show you — focus your response on what's in that selection.
+
+    Your replies render in a small speech bubble above the user's sprite, so keep responses concise and skimmable. Aim for under 150 words unless the user explicitly asks for more detail or depth. Favor direct answers over preamble. Skip phrases like "I can see that..." or "Looking at your screen..." — just answer.
+
+    When the user asks a follow-up in the chat sidebar, you have access to the full conversation history, including the original screenshot. Build on that context naturally instead of treating each message as a fresh start.
+
+    If the user has set an active Context Profile (provided below), that describes how they want you to behave for this session. Follow it.
     """
 
     /// Appends the active context profile to a base system prompt, if one exists.
@@ -1109,182 +967,19 @@ final class CompanionManager: ObservableObject {
         """
     }
 
-    /// Builds the full system prompt for text-to-text mode with active profile context.
+    /// Builds the full system prompt for text mode with active profile context.
     private func buildTextModeSystemPrompt() -> String {
         appendActiveProfileContext(to: Self.textModeSystemPrompt)
     }
 
-    /// Builds the full system prompt for voice mode with active profile context.
-    private func buildVoiceModeSystemPrompt() -> String {
-        appendActiveProfileContext(to: Self.companionVoiceResponseSystemPrompt)
-    }
-
-    // MARK: - AI Response Pipeline
-
-    /// Captures a screenshot, sends it along with the transcript to Claude,
-    /// and plays the response aloud via ElevenLabs TTS. The cursor stays in
-    /// the spinner/processing state until TTS audio begins playing.
-    /// Claude's response may include a [POINT:x,y:label] tag which triggers
-    /// the buddy to fly to that element on screen.
-    private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
-        currentResponseTask?.cancel()
-        elevenLabsTTSClient.stopPlayback()
-
-        currentResponseTask = Task {
-            // Stay in processing (spinner) state — no streaming text displayed
-            voiceState = .processing
-
-            do {
-                // Capture all connected screens so the AI has full context
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
-
-                guard !Task.isCancelled else { return }
-
-                // Build image labels with the actual screenshot pixel dimensions
-                // so Claude's coordinate space matches the image it sees. We
-                // scale from screenshot pixels to display points ourselves.
-                let labeledImages = screenCaptures.map { capture in
-                    let dimensionInfo = " (image dimensions: \(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels) pixels)"
-                    return (data: capture.imageData, label: capture.label + dimensionInfo)
-                }
-
-                // Pass conversation history so Claude remembers prior exchanges
-                let historyForAPI = conversationHistory.map { entry in
-                    (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
-                }
-
-                let voiceSystemPrompt = self.buildVoiceModeSystemPrompt()
-
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
-                    systemPrompt: voiceSystemPrompt,
-                    conversationHistory: historyForAPI,
-                    userPrompt: transcript,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
-                    }
-                )
-
-                guard !Task.isCancelled else { return }
-
-                // Parse the [POINT:...] tag from Claude's response
-                let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
-                let spokenText = parseResult.spokenText
-
-                // Handle element pointing if Claude returned coordinates.
-                // Switch to idle BEFORE setting the location so the triangle
-                // becomes visible and can fly to the target. Without this, the
-                // spinner hides the triangle and the flight animation is invisible.
-                let hasPointCoordinate = parseResult.coordinate != nil
-                if hasPointCoordinate {
-                    voiceState = .idle
-                }
-
-                // Pick the screen capture matching Claude's screen number,
-                // falling back to the cursor screen if not specified.
-                let targetScreenCapture: CompanionScreenCapture? = {
-                    if let screenNumber = parseResult.screenNumber,
-                       screenNumber >= 1 && screenNumber <= screenCaptures.count {
-                        return screenCaptures[screenNumber - 1]
-                    }
-                    return screenCaptures.first(where: { $0.isCursorScreen })
-                }()
-
-                if let pointCoordinate = parseResult.coordinate,
-                   let targetScreenCapture {
-                    // Claude's coordinates are in the screenshot's pixel space
-                    // (top-left origin, e.g. 1280x831). Scale to the display's
-                    // point space (e.g. 1512x982), then convert to AppKit global coords.
-                    let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
-                    let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
-                    let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
-                    let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
-                    let displayFrame = targetScreenCapture.displayFrame
-
-                    // Clamp to screenshot coordinate space
-                    let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                    let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-
-                    // Scale from screenshot pixels to display points
-                    let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-                    let displayLocalY = clampedY * (displayHeight / screenshotHeight)
-
-                    // Convert from top-left origin (screenshot) to bottom-left origin (AppKit)
-                    let appKitY = displayHeight - displayLocalY
-
-                    // Convert display-local coords to global screen coords
-                    let globalLocation = CGPoint(
-                        x: displayLocalX + displayFrame.origin.x,
-                        y: appKitY + displayFrame.origin.y
-                    )
-
-                    detectedElementScreenLocation = globalLocation
-                    detectedElementDisplayFrame = displayFrame
-                    ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
-                    print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
-                } else {
-                    print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
-                }
-
-                // Save this exchange to conversation history (with the point tag
-                // stripped so it doesn't confuse future context)
-                conversationHistory.append((
-                    userTranscript: transcript,
-                    assistantResponse: spokenText
-                ))
-
-                // Keep history within the configured limit
-                if conversationHistory.count > conversationHistoryLimit {
-                    conversationHistory.removeFirst(conversationHistory.count - conversationHistoryLimit)
-                }
-
-                print("🧠 Conversation history: \(conversationHistory.count) exchanges")
-
-                ClickyAnalytics.trackAIResponseReceived(response: spokenText)
-
-                // Play the response via TTS. Keep the spinner (processing state)
-                // until the audio actually starts playing, then switch to responding.
-                if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    do {
-                        try await elevenLabsTTSClient.speakText(spokenText)
-                        // speakText returns after player.play() — audio is now playing
-                        voiceState = .responding
-                    } catch {
-                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ ElevenLabs TTS error: \(error)")
-                        speakCreditsErrorFallback()
-                    }
-                }
-            } catch is CancellationError {
-                // User spoke again — response was interrupted
-            } catch {
-                ClickyAnalytics.trackResponseError(error: error.localizedDescription)
-                print("⚠️ Companion response error: \(error)")
-                speakCreditsErrorFallback()
-            }
-
-            if !Task.isCancelled {
-                voiceState = .idle
-                scheduleTransientHideIfNeeded()
-                scheduleSpriteReturnToRestingIfNeeded()
-            }
-        }
-    }
-
-    /// In stealth mode, waits for TTS playback and any pointing animation to
-    /// finish, then fades out the overlay after a 1-second pause. Cancelled
-    /// automatically if the user starts another interaction.
+    /// In stealth mode, waits for any pointing animation to finish, then
+    /// fades out the overlay after a 1-second pause. Cancelled automatically
+    /// if the user starts another interaction.
     private func scheduleTransientHideIfNeeded() {
         guard isStealthModeEnabled && isOverlayVisible else { return }
 
         transientHideTask?.cancel()
         transientHideTask = Task {
-            // Wait for TTS audio to finish playing
-            while elevenLabsTTSClient.isPlaying {
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                guard !Task.isCancelled else { return }
-            }
-
             // Wait for pointing animation to finish (location is cleared
             // when the buddy flies back to the cursor)
             while detectedElementScreenLocation != nil {
@@ -1300,11 +995,10 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// After the voice interaction finishes and there's no element to
-    /// point at, waits for TTS and any pointing animation to finish, then
-    /// sends the sprite back to its resting position at the bottom of the
-    /// screen. If an element pointing IS happening, the sprite will fly
-    /// back after the pointing animation completes (handled in BlueCursorView).
+    /// After an interaction finishes and there's no element to point at,
+    /// waits for any pointing animation to finish, then sends the sprite
+    /// back to its resting position. If element pointing IS happening,
+    /// the sprite flies back after the pointing animation (handled in BlueCursorView).
     private var spriteReturnTask: Task<Void, Never>?
 
     private func scheduleSpriteReturnToRestingIfNeeded() {
@@ -1315,12 +1009,6 @@ final class CompanionManager: ObservableObject {
 
         spriteReturnTask?.cancel()
         spriteReturnTask = Task {
-            // Wait for TTS audio to finish playing
-            while elevenLabsTTSClient.isPlaying {
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                guard !Task.isCancelled else { return }
-            }
-
             // Wait for any pointing animation to finish
             while detectedElementScreenLocation != nil {
                 try? await Task.sleep(nanoseconds: 200_000_000)
@@ -1338,16 +1026,6 @@ final class CompanionManager: ObservableObject {
                 screenFrame: mainScreenFrame
             )
         }
-    }
-
-    /// Speaks a hardcoded error message using macOS system TTS when API
-    /// credits run out. Uses NSSpeechSynthesizer so it works even when
-    /// ElevenLabs is down.
-    private func speakCreditsErrorFallback() {
-        let utterance = "I'm all out of credits. Please DM Farza and tell him to bring me back to life."
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
-        voiceState = .responding
     }
 
     // MARK: - Point Tag Parsing
@@ -1550,11 +1228,13 @@ final class CompanionManager: ObservableObject {
     /// point at, then triggers the buddy's flight animation. Used during
     /// onboarding to demo the pointing feature while the intro video plays.
     func performOnboardingDemoInteraction() {
-        // Don't interrupt an active voice response
-        guard voiceState == .idle || voiceState == .responding else { return }
-
         Task {
             do {
+                guard let apiKey = KeychainHelper.loadAnthropicAPIKey(), !apiKey.isEmpty else {
+                    print("🎯 Onboarding demo: no API key configured")
+                    return
+                }
+
                 let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
 
                 // Only send the cursor screen so Claude can't pick something
@@ -1564,13 +1244,12 @@ final class CompanionManager: ObservableObject {
                     return
                 }
 
-                let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
-                let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
-
-                let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
-                    images: labeledImages,
+                let fullResponseText = try await ClaudeAPI.analyzeImageDirectStreaming(
+                    apiKey: apiKey,
+                    imageData: cursorScreenCapture.imageData,
                     systemPrompt: Self.onboardingDemoSystemPrompt,
-                    userPrompt: "look around my screen and find something interesting to point at",
+                    userPrompt: "look around my screen and find something interesting to point at (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)",
+                    model: selectedModel,
                     onTextChunk: { _ in }
                 )
 

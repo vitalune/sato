@@ -747,14 +747,6 @@ extension View {
     }
 }
 
-// MARK: - Buddy Composer Visual Style
-
-enum BuddyComposerVisualStyle {
-    static let waveformLeadingColor = Color(hex: "#F3FBFF")
-    static let waveformTrailingColor = Color(hex: "#8FD2FF")
-    static let waveformGlowColor = Color(hex: "#AEE3FF")
-}
-
 // MARK: - Pointer Cursor (AppKit Bridge)
 
 /// Uses AppKit's cursor rect system to reliably show a pointing hand cursor.

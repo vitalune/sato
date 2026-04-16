@@ -211,17 +211,18 @@ final class SpriteAnimationManager: ObservableObject {
         ],
     ]
 
-    /// Sky (tabby cat) uses simpler filenames and a single idle GIF for all directions.
-    private static var skyAssetFileNames: [SpriteAnimationType: [SpriteDirection: String]] {
+    /// Builds a simple asset filename map where a single idle GIF is used for all directions.
+    /// Files are prefixed to avoid bundle collisions (e.g. "sky-idle", "lexi-bark").
+    private static func simpleAssetFileNames(prefix: String, barkFileName: String) -> [SpriteAnimationType: [SpriteDirection: String]] {
         var allDirectionsIdle: [SpriteDirection: String] = [:]
         for direction in SpriteDirection.allCases {
-            allDirectionsIdle[direction] = "idle"
+            allDirectionsIdle[direction] = "\(prefix)-idle"
         }
         return [
             .idle: allDirectionsIdle,
-            .walking: [.east: "walk-east", .west: "walk-west"],
-            .flying: [.northEast: "jump-east", .southWest: "jump-west"],
-            .bark: [.south: "lick"],
+            .walking: [.east: "\(prefix)-walk-east", .west: "\(prefix)-walk-west"],
+            .flying: [.northEast: "\(prefix)-jump-east", .southWest: "\(prefix)-jump-west"],
+            .bark: [.south: barkFileName],
             .messageDelivered: allDirectionsIdle,
         ]
     }
@@ -292,9 +293,16 @@ final class SpriteAnimationManager: ObservableObject {
     func switchSpriteAssets(directoryName: String) {
         activeSpriteDirectory = directoryName
 
-        if directoryName == "sky-animations" {
-            assetFileNames = Self.skyAssetFileNames
-        } else {
+        switch directoryName {
+        case "sky-animations":
+            assetFileNames = Self.simpleAssetFileNames(prefix: "sky", barkFileName: "sky-lick")
+        case "lexi-animations":
+            assetFileNames = Self.simpleAssetFileNames(prefix: "lexi", barkFileName: "lexi-bark")
+        case "rover-animations":
+            assetFileNames = Self.simpleAssetFileNames(prefix: "rover", barkFileName: "rover-bark")
+        case "paris-animations":
+            assetFileNames = Self.simpleAssetFileNames(prefix: "paris", barkFileName: "paris-howl")
+        default:
             assetFileNames = Self.maxAssetFileNames
         }
 
@@ -302,8 +310,13 @@ final class SpriteAnimationManager: ObservableObject {
         preloadedFrameDurations.removeAll()
         preloadAllAnimations()
 
-        // Reset to idle so the new sprite is immediately visible
-        setAnimation(type: .idle, direction: .south)
+        // Resume the animation that matches the current state
+        if spriteState == .resting && patrolPauseTimeRemaining <= 0 {
+            let walkDirection: SpriteDirection = patrolMovingEast ? .east : .west
+            setAnimation(type: .walking, direction: walkDirection)
+        } else {
+            setAnimation(type: .idle, direction: .south)
+        }
     }
 
     // MARK: - GIF Frame Extraction

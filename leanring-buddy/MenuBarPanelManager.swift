@@ -233,7 +233,7 @@ final class MenuBarPanelManager: NSObject {
             }
 
             // Delay dismissal slightly to avoid closing the panel when
-            // a system permission dialog appears (e.g. microphone access).
+            // a system permission dialog appears.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 guard panel.isVisible else { return }
 
