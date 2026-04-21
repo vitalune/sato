@@ -1,16 +1,18 @@
 #!/bin/bash
 #
-# Builds Sato in Release mode, packages it as a signed .dmg installer,
-# and prints the Sparkle EdDSA signature for appcast.xml.
+# Builds Sato in Release mode, signs with Developer ID, notarizes with Apple,
+# packages as a .dmg installer, and prints the Sparkle EdDSA signature.
 #
 # Usage:
 #   ./scripts/build-release.sh 1.0.0
 #
 # Prerequisites:
 #   brew install create-dmg
+#   Developer ID certificate installed in keychain
+#   Notarization credentials stored: xcrun notarytool store-credentials "sato-notarization"
 #
 # Output:
-#   build/Sato-<version>.dmg
+#   build/Sato-<version>.dmg (signed, notarized, stapled)
 #
 set -e
 
@@ -18,6 +20,10 @@ set -e
 if [ -d "/opt/homebrew/bin" ]; then
     export PATH="/opt/homebrew/bin:$PATH"
 fi
+
+DEVELOPER_ID="Developer ID Application: Amir Valizadeh (UP52GQK38V)"
+TEAM_ID="UP52GQK38V"
+NOTARY_PROFILE="sato-notarization"
 
 VERSION="${1:-}"
 if [ -z "$VERSION" ]; then
@@ -49,6 +55,21 @@ fi
 
 if [ ! -f "$BACKGROUND_1X" ]; then
     echo "DMG background not found at $BACKGROUND_1X"
+    exit 1
+fi
+
+if ! security find-identity -v -p codesigning | grep -q "$TEAM_ID"; then
+    echo "Developer ID certificate not found in keychain"
+    echo "  Expected: $DEVELOPER_ID"
+    exit 1
+fi
+
+if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" &>/dev/null 2>&1; then
+    echo "Notarization credentials not configured."
+    echo "  Run: xcrun notarytool store-credentials \"$NOTARY_PROFILE\" \\"
+    echo "         --apple-id \"YOUR_APPLE_ID\" \\"
+    echo "         --team-id \"$TEAM_ID\" \\"
+    echo "         --password \"YOUR_APP_SPECIFIC_PASSWORD\""
     exit 1
 fi
 
@@ -95,14 +116,18 @@ fi
 
 cp -R "$BUILT_APP" "$EXPORT_DIR/Sato.app"
 
-# Ad-hoc sign with hardened runtime so Gatekeeper is less hostile
-echo "Ad-hoc signing Sato.app..."
-codesign --force --deep --sign - \
+# Sign the app with Developer ID and hardened runtime (required for notarization)
+echo "Signing Sato.app with Developer ID..."
+codesign --force --deep \
+    --sign "$DEVELOPER_ID" \
     --options runtime \
+    --timestamp \
     --entitlements "$ENTITLEMENTS" \
     "$EXPORT_DIR/Sato.app"
 
-codesign --verify --verbose "$EXPORT_DIR/Sato.app" 2>&1 || true
+echo "Verifying signature..."
+codesign --verify --deep --strict --verbose=2 "$EXPORT_DIR/Sato.app"
+spctl --assess --type execute --verbose "$EXPORT_DIR/Sato.app" || echo "(spctl non-zero is expected pre-notarization)"
 
 # Build the DMG.
 # Window size matches the 1x background (540x378). Icon positions place
@@ -138,13 +163,41 @@ if [ ! -f "$DMG_OUTPUT" ]; then
     exit 1
 fi
 
-DMG_SIZE=$(stat -f%z "$DMG_OUTPUT")
 echo ""
-echo "DMG created: $DMG_OUTPUT ($DMG_SIZE bytes)"
+echo "DMG created: $DMG_OUTPUT"
 
-# Sign the DMG with Sparkle's EdDSA key so auto-update signature
-# verification works. The private key must be in the macOS Keychain
-# (put there by Sparkle's generate_keys tool).
+# Notarize the DMG with Apple
+echo ""
+echo "Submitting DMG to Apple for notarization..."
+echo "(This typically takes 1-5 minutes)"
+
+NOTARY_OUTPUT=$(xcrun notarytool submit "$DMG_OUTPUT" \
+    --keychain-profile "$NOTARY_PROFILE" \
+    --wait 2>&1)
+
+echo "$NOTARY_OUTPUT"
+
+if echo "$NOTARY_OUTPUT" | grep -q "status: Accepted"; then
+    echo "Notarization accepted by Apple"
+else
+    echo "Notarization failed or timed out"
+    echo ""
+    SUBMISSION_ID=$(echo "$NOTARY_OUTPUT" | grep "id:" | head -1 | awk '{print $2}')
+    if [ -n "$SUBMISSION_ID" ]; then
+        echo "To debug, run:"
+        echo "  xcrun notarytool log \"$SUBMISSION_ID\" --keychain-profile $NOTARY_PROFILE"
+    fi
+    exit 1
+fi
+
+# Staple the notarization ticket to the DMG so offline verification works
+echo "Stapling notarization ticket to DMG..."
+xcrun stapler staple "$DMG_OUTPUT"
+xcrun stapler validate "$DMG_OUTPUT"
+
+# Sparkle EdDSA signing happens LAST because notarization/stapling modifies
+# the DMG bytes, which would invalidate an earlier Sparkle signature.
+DMG_SIZE=$(stat -f%z "$DMG_OUTPUT")
 echo ""
 echo "Signing DMG with Sparkle EdDSA key..."
 SIGN_UPDATE=$(find ~/Library/Developer/Xcode/DerivedData -name "sign_update" -path "*/artifacts/*" 2>/dev/null | head -1)
