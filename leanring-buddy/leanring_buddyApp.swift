@@ -9,7 +9,6 @@
 
 import ServiceManagement
 import SwiftUI
-import Sparkle
 
 @main
 struct leanring_buddyApp: App {
@@ -31,7 +30,7 @@ struct leanring_buddyApp: App {
 final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
     private let companionManager = CompanionManager()
-    private var sparkleUpdaterController: SPUStandardUpdaterController?
+    private let updaterController = UpdaterController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("🎯 Sato: Starting...")
@@ -52,7 +51,10 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         ClickyAnalytics.configure()
         ClickyAnalytics.trackAppOpened()
 
-        menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
+        menuBarPanelManager = MenuBarPanelManager(
+            companionManager: companionManager,
+            updaterController: updaterController
+        )
         companionManager.start()
         // Auto-open the panel if the user still needs to do something:
         // either they haven't onboarded yet, or permissions were revoked.
@@ -60,7 +62,6 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
             menuBarPanelManager?.showPanelOnLaunch()
         }
         registerAsLoginItemIfNeeded()
-        // startSparkleUpdater()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -96,18 +97,4 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func startSparkleUpdater() {
-        let updaterController = SPUStandardUpdaterController(
-            startingUpdater: false,
-            updaterDelegate: nil,
-            userDriverDelegate: nil
-        )
-        self.sparkleUpdaterController = updaterController
-
-        do {
-            try updaterController.updater.start()
-        } catch {
-            print("⚠️ Sato: Sparkle updater failed to start: \(error)")
-        }
-    }
 }

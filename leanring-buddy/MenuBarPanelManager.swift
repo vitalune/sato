@@ -35,6 +35,7 @@ final class MenuBarPanelManager: NSObject {
     private var dismissPanelObserver: NSObjectProtocol?
 
     private let companionManager: CompanionManager
+    private let updaterController: UpdaterController
     private let panelWidth: CGFloat = 320
     private let panelHeight: CGFloat = 380
 
@@ -42,8 +43,9 @@ final class MenuBarPanelManager: NSObject {
     /// panel renders on top of it and is always visible when opened.
     private let panelWindowLevel = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
 
-    init(companionManager: CompanionManager) {
+    init(companionManager: CompanionManager, updaterController: UpdaterController) {
         self.companionManager = companionManager
+        self.updaterController = updaterController
         super.init()
         createStatusItem()
 
@@ -124,7 +126,7 @@ final class MenuBarPanelManager: NSObject {
     }
 
     private func createPanel() {
-        let companionPanelView = CompanionPanelView(companionManager: companionManager)
+        let companionPanelView = CompanionPanelView(companionManager: companionManager, updaterController: updaterController)
             .frame(width: panelWidth)
 
         let hostingView = NSHostingView(rootView: companionPanelView)

@@ -11,6 +11,7 @@ import SwiftUI
 
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
+    let updaterController: UpdaterController
     @State private var emailInput: String = ""
     @State private var apiKeyInput: String = ""
     @State private var isApiKeyVisible: Bool = false
@@ -105,6 +106,12 @@ struct CompanionPanelView: View {
                     .frame(height: 16)
 
                 dmFarzaButton
+                    .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 8)
+
+                checkForUpdatesButton
                     .padding(.horizontal, 16)
             }
 
@@ -1152,6 +1159,26 @@ struct CompanionPanelView: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
+    }
+
+    // MARK: - Check for Updates
+
+    private var checkForUpdatesButton: some View {
+        Button(action: {
+            updaterController.checkForUpdates()
+        }) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 11, weight: .medium))
+                Text("Check for Updates")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundColor(DS.Colors.textTertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+        .disabled(!updaterController.canCheckForUpdates)
     }
 
     // MARK: - Footer

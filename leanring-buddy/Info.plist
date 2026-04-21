@@ -2,17 +2,17 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleShortVersionString</key>
-	<string>1.0.0</string>
-	<key>CFBundleVersion</key>
-	<string>1</string>
-	<key>NSHumanReadableCopyright</key>
-	<string>Copyright © 2026 Amir Valizadeh. All rights reserved.</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>Sato needs screen recording access to see your screen and help you.</string>
+	<key>SUAutomaticallyUpdate</key>
+	<false/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
 	<key>SUFeedURL</key>
-	<string>https://raw.githubusercontent.com/julianjear/makesomething-mac-app/main/appcast.xml</string>
+	<string>https://sato.host/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>/l3d2rw5ZZFRU3AadP/w2Zf8FHfhA6bKv16BQOV5OSk=</string>
+	<string>dHJCS/+Dids6ag5BzdcTd0pbueo/KN/Jf8Xe//cHMdg=</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 </dict>
 </plist>
