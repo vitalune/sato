@@ -14,6 +14,11 @@
 #
 set -e
 
+# Ensure Homebrew tools are on PATH (common on Apple Silicon Macs)
+if [ -d "/opt/homebrew/bin" ]; then
+    export PATH="/opt/homebrew/bin:$PATH"
+fi
+
 VERSION="${1:-}"
 if [ -z "$VERSION" ]; then
     echo "Usage: $0 <version>"
@@ -110,13 +115,13 @@ echo "Creating DMG..."
 set +e
 create-dmg \
     --volname "Sato $VERSION" \
-    --background "$BACKGROUND_2X" \
+    --background "$BACKGROUND_1X" \
     --window-pos 200 120 \
     --window-size 540 378 \
     --icon-size 100 \
-    --icon "Sato.app" 140 190 \
+    --icon "Sato.app" 135 189 \
     --hide-extension "Sato.app" \
-    --app-drop-link 400 190 \
+    --app-drop-link 405 189 \
     --no-internet-enable \
     "$DMG_OUTPUT" \
     "$EXPORT_DIR"
