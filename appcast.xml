@@ -5,6 +5,30 @@
         <link>https://sato.host/appcast.xml</link>
         <description>Most recent updates to Sato</description>
         <language>en</language>
-        <!-- Item entries go here. Added for each release. -->
+        <item>
+            <title>Version 1.0.0</title>
+            <pubDate>Tue, 21 Apr 2026 18:50:48 +0000</pubDate>
+            <description><![CDATA[
+                <h2>Sato 1.0.0 — Initial Release</h2>
+                <p>The first public release of Sato.</p>
+                <h3>Features</h3>
+                <ul>
+                    <li>Five pixel art companions: Max, Sky, Lexi, Rover, and Paris</li>
+                    <li>Screenshot-based AI assistance via Ctrl+Option</li>
+                    <li>Chat sidebar for follow-up conversations</li>
+                    <li>Context profiles for customizing AI behavior</li>
+                    <li>Stealth mode</li>
+                    <li>Automatic updates via Sparkle</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://github.com/vitalune/sato/releases/download/v1.0.0/Sato-1.0.0.dmg"
+                sparkle:version="1"
+                sparkle:shortVersionString="1.0.0"
+                sparkle:edSignature="BVkKhGUhc+H8K42s3EZa11lg1znKFvxe4LN3Po1sgqaslG4T0NM/uVVXX+9+6PL3w367jVathNJgyj3dKhykCQ=="
+                length="65770585"
+                type="application/octet-stream"/>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+        </item>
     </channel>
 </rss>
