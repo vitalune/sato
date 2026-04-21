@@ -217,16 +217,16 @@ struct CompanionPanelView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Hi, I'm Farza. This is Sato.")
+                Text("Welcome to Sato.")
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(DS.Colors.textSecondary)
 
-                Text("A side project I made for fun to help me learn stuff as I use my computer.")
+                Text("Sato is a desktop AI companion that helps you with whatever is on your screen.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("Nothing runs in the background. Sato will only take a screenshot when you press the hot key. So, you can give that permission in peace. If you are still sus, eh, I can't do much there champ.")
+                Text("Nothing runs in the background. Sato only takes a screenshot when you press the hotkey. Grant the permissions below to get started.")
                     .font(.system(size: 11))
                     .foregroundColor(Color(red: 0.9, green: 0.4, blue: 0.4))
                     .fixedSize(horizontal: false, vertical: true)
@@ -1121,7 +1121,7 @@ struct CompanionPanelView: View {
 
     private var dmFarzaButton: some View {
         Button(action: {
-            if let url = URL(string: "https://x.com/farzatv") {
+            if let url = URL(string: "https://github.com/vitalune/sato/issues") {
                 NSWorkspace.shared.open(url)
             }
         }) {
@@ -1130,9 +1130,9 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .medium))
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Got feedback? DM me")
+                    Text("Got feedback?")
                         .font(.system(size: 12, weight: .semibold))
-                    Text("Bugs, ideas, anything — I read every message.")
+                    Text("Bugs, ideas, feature requests — open an issue on GitHub.")
                         .font(.system(size: 10))
                         .foregroundColor(DS.Colors.textTertiary)
                 }
@@ -1192,10 +1192,15 @@ struct CompanionPanelView: View {
                 }
             }
 
-            Text("Sato — Your AI Desktop Companion")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(DS.Colors.textTertiary.opacity(0.6))
-                .frame(maxWidth: .infinity, alignment: .center)
+            VStack(spacing: 2) {
+                Text("Sato — Your AI Desktop Companion")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary.opacity(0.6))
+                Text("Created by Amir Valizadeh")
+                    .font(.system(size: 9, weight: .regular))
+                    .foregroundColor(DS.Colors.textTertiary.opacity(0.4))
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
         }
     }
 

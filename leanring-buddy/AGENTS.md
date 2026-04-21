@@ -1,4 +1,4 @@
-# AGENTS.md - leanring-buddy (Main App Target)
+# AGENTS.md - Sato (Main App Target)
 
 ## Source Files
 

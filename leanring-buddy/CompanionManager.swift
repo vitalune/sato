@@ -1089,25 +1089,28 @@ final class CompanionManager: ObservableObject {
 
     /// Sets up the onboarding video player, starts playback, and schedules
     /// the demo interaction at 40s. Called by BlueCursorView when onboarding starts.
+    /// The video plays in a dedicated floating window with playback controls
+    /// and a close button (managed by OverlayWindowManager).
     func setupOnboardingVideo() {
-        guard let videoURL = URL(string: "https://stream.mux.com/e5jB8UuSrtFABVnTHCR7k3sIsmcUHCyhtLu1tzqLlfs.m3u8") else { return }
+        guard let videoURL = Bundle.main.url(forResource: "onboarding", withExtension: "mp4") else {
+            print("⚠️ Sato: onboarding.mp4 not found in bundle")
+            return
+        }
 
         let player = AVPlayer(url: videoURL)
         player.isMuted = false
         player.volume = 0.0
         self.onboardingVideoPlayer = player
         self.showOnboardingVideo = true
-        self.onboardingVideoOpacity = 0.0
 
-        // Start playback immediately — the video plays while invisible,
-        // then we fade in both the visual and audio over 1s.
+        // Show the video in a dedicated floating window with playback controls
+        overlayWindowManager.showOnboardingVideoWindow(player: player) { [weak self] in
+            self?.dismissOnboardingVideo()
+        }
+
+        // Start playback and fade audio in over 2 seconds
         player.play()
-
-        // Wait for SwiftUI to mount the view, then set opacity to 1.
-        // The .animation modifier on the view handles the actual animation.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            self.onboardingVideoOpacity = 1.0
-            // Fade audio volume from 0 → 1 over 2s to match visual fade
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             self.fadeInVideoAudio(player: player, targetVolume: 1.0, duration: 2.0)
         }
 
@@ -1122,7 +1125,7 @@ final class CompanionManager: ObservableObject {
             self?.performOnboardingDemoInteraction()
         }
 
-        // Fade out and clean up when the video finishes
+        // Clean up when the video finishes playing naturally
         onboardingVideoEndObserver = NotificationCenter.default.addObserver(
             forName: AVPlayerItem.didPlayToEndTimeNotification,
             object: player.currentItem,
@@ -1130,15 +1133,19 @@ final class CompanionManager: ObservableObject {
         ) { [weak self] _ in
             guard let self else { return }
             ClickyAnalytics.trackOnboardingVideoCompleted()
-            self.onboardingVideoOpacity = 0.0
-            // Wait for the 2s fade-out animation to complete before tearing down
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                self.tearDownOnboardingVideo()
-                // After the video disappears, stream in the prompt to try talking
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    self.startOnboardingPromptStream()
-                }
-            }
+            self.dismissOnboardingVideo()
+        }
+    }
+
+    /// Dismisses the onboarding video window and proceeds to the post-video prompt.
+    /// Called when the user clicks the close button or the video finishes playing.
+    /// Guards against double-calling since both events can fire.
+    func dismissOnboardingVideo() {
+        guard showOnboardingVideo else { return }
+        overlayWindowManager.hideOnboardingVideoWindow()
+        tearDownOnboardingVideo()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            self.startOnboardingPromptStream()
         }
     }
 

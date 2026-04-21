@@ -9,6 +9,7 @@
 
 import AppKit
 import AVFoundation
+import AVKit
 import SwiftUI
 
 class OverlayWindow: NSWindow {
@@ -147,10 +148,10 @@ struct BlueCursorView: View {
 
     // MARK: - Onboarding Video Layout
 
-    private let onboardingVideoPlayerWidth: CGFloat = 330
-    private let onboardingVideoPlayerHeight: CGFloat = 186
+    private let onboardingVideoPlayerWidth: CGFloat = 480
+    private let onboardingVideoPlayerHeight: CGFloat = 270
 
-    private let fullWelcomeMessage = "hey! i'm clicky"
+    private let fullWelcomeMessage = "hey! i'm sato"
 
     private let navigationPointerPhrases = [
         "right here!",
@@ -194,21 +195,9 @@ struct BlueCursorView: View {
                     }
             }
 
-            // Onboarding video — always in the view tree so opacity animation works
-            // reliably. When no player exists or opacity is 0, nothing is visible.
-            // allowsHitTesting(false) prevents it from intercepting clicks.
-            OnboardingVideoPlayerView(player: companionManager.onboardingVideoPlayer)
-                .frame(width: onboardingVideoPlayerWidth, height: onboardingVideoPlayerHeight)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .shadow(color: Color.black.opacity(0.4 * companionManager.onboardingVideoOpacity), radius: 12, x: 0, y: 6)
-                .opacity(isCursorOnThisScreen ? companionManager.onboardingVideoOpacity : 0)
-                .position(
-                    x: cursorPosition.x + 10 + (onboardingVideoPlayerWidth / 2),
-                    y: cursorPosition.y + 18 + (onboardingVideoPlayerHeight / 2)
-                )
-                .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
-                .animation(.easeInOut(duration: 2.0), value: companionManager.onboardingVideoOpacity)
-                .allowsHitTesting(false)
+            // Onboarding video is now shown in a dedicated floating window
+            // (managed by OverlayWindowManager) so it can have interactive
+            // playback controls and a close button.
 
             // Onboarding prompt — "press control + option and say hi" streamed after video ends
             if isCursorOnThisScreen && companionManager.showOnboardingPrompt && !companionManager.onboardingPromptText.isEmpty {
@@ -734,6 +723,8 @@ class OverlayWindowManager {
     private var interactiveOverlayWindow: InteractiveOverlayWindow?
     /// The chat sidebar window, shown when the user expands a response.
     private var chatSidebarWindow: InteractiveOverlayWindow?
+    /// Dedicated floating window for the onboarding video with playback controls.
+    private var onboardingVideoWindow: NSPanel?
     /// Local key event monitor installed while the interactive overlay is visible.
     /// Intercepts Enter and Escape at the app level so they reliably reach the
     /// screenshot selection and text input views — NSHostingView can otherwise
@@ -887,6 +878,83 @@ class OverlayWindowManager {
         }
     }
 
+    // MARK: - Onboarding Video Window
+
+    /// Shows the onboarding video in a dedicated floating window with playback
+    /// controls and a close button. Positioned near the current mouse cursor,
+    /// clamped to screen bounds so it doesn't go off-screen.
+    func showOnboardingVideoWindow(player: AVPlayer, onDismiss: @escaping () -> Void) {
+        hideOnboardingVideoWindow()
+
+        let videoWidth: CGFloat = 480
+        let videoHeight: CGFloat = 270
+
+        // Position near the current mouse location, offset to the right and below
+        let mouseLocation = NSEvent.mouseLocation
+        guard let screen = NSScreen.main else { return }
+        let screenFrame = screen.visibleFrame
+
+        var windowX = mouseLocation.x + 30
+        var windowY = mouseLocation.y - videoHeight - 30
+
+        // Clamp to screen bounds — flip to left of cursor if overflowing right
+        if windowX + videoWidth > screenFrame.maxX {
+            windowX = mouseLocation.x - videoWidth - 30
+        }
+        if windowY < screenFrame.minY {
+            windowY = screenFrame.minY + 10
+        }
+        if windowX < screenFrame.minX {
+            windowX = screenFrame.minX + 10
+        }
+
+        let windowFrame = NSRect(x: windowX, y: windowY, width: videoWidth, height: videoHeight)
+
+        let panel = NSPanel(
+            contentRect: windowFrame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.level = .screenSaver
+        panel.ignoresMouseEvents = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .stationary]
+        panel.hasShadow = false
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
+
+        let contentView = OnboardingVideoOverlayView(player: player, onDismiss: onDismiss)
+        let hostingView = NSHostingView(rootView: contentView)
+        hostingView.frame = NSRect(x: 0, y: 0, width: videoWidth, height: videoHeight)
+        panel.contentView = hostingView
+
+        // Start invisible and fade in over 1 second
+        panel.alphaValue = 0.0
+        onboardingVideoWindow = panel
+        panel.orderFrontRegardless()
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 1.0
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().alphaValue = 1.0
+        }
+    }
+
+    func hideOnboardingVideoWindow() {
+        guard let window = onboardingVideoWindow else { return }
+        onboardingVideoWindow = nil
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.5
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            window.animator().alphaValue = 0.0
+        }, completionHandler: {
+            window.orderOut(nil)
+            window.contentView = nil
+        })
+    }
+
     // MARK: - Chat Sidebar
 
     /// Shows the chat sidebar anchored to the right edge of the given screen.
@@ -1007,41 +1075,53 @@ class OverlayWindowManager {
 
 // MARK: - Onboarding Video Player
 
-/// NSViewRepresentable wrapping an AVPlayerLayer so HLS video plays
-/// inside SwiftUI. Uses a custom NSView subclass to keep the player
-/// layer sized to the view's bounds automatically.
+/// NSViewRepresentable wrapping AVPlayerView from AVKit so the onboarding
+/// video has built-in playback controls (play/pause, scrubber).
 private struct OnboardingVideoPlayerView: NSViewRepresentable {
     let player: AVPlayer?
 
-    func makeNSView(context: Context) -> AVPlayerNSView {
-        let view = AVPlayerNSView()
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
         view.player = player
+        view.controlsStyle = .inline
+        view.showsFullScreenToggleButton = false
         return view
     }
 
-    func updateNSView(_ nsView: AVPlayerNSView, context: Context) {
+    func updateNSView(_ nsView: AVPlayerView, context: Context) {
         nsView.player = player
     }
 }
 
-private class AVPlayerNSView: NSView {
-    var player: AVPlayer? {
-        didSet { playerLayer.player = player }
-    }
+/// SwiftUI view that displays the onboarding video with playback controls
+/// and a close button. Shown in a dedicated floating window managed by
+/// OverlayWindowManager.
+struct OnboardingVideoOverlayView: View {
+    let player: AVPlayer
+    let onDismiss: () -> Void
 
-    private let playerLayer = AVPlayerLayer()
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            OnboardingVideoPlayerView(player: player)
 
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        playerLayer.videoGravity = .resizeAspectFill
-        layer?.addSublayer(playerLayer)
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    override func layout() {
-        super.layout()
-        playerLayer.frame = bounds
+            Button(action: onDismiss) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 22))
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, Color.black.opacity(0.6))
+                    .shadow(color: .black.opacity(0.3), radius: 2)
+            }
+            .buttonStyle(.plain)
+            .padding(8)
+            .onHover { hovering in
+                if hovering {
+                    NSCursor.pointingHand.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .shadow(color: Color.black.opacity(0.4), radius: 12, x: 0, y: 6)
     }
 }
