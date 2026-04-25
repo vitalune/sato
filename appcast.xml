@@ -6,9 +6,26 @@
         <description>Most recent updates to Sato</description>
         <language>en</language>
         <item>
+            <title>Version 1.1.1</title>
+            <pubDate>Sat, 25 Apr 2026 13:58:05 -0400</pubDate>
+            <sparkle:version>10101</sparkle:version>
+            <sparkle:shortVersionString>1.1.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <h2>Update metadata fix</h2>
+                <p>Quick fix release. v1.1.0's auto-updater metadata didn't match the appcast feed, which made some users see "update available" prompts even after installing v1.1.0. v1.1.1 corrects this — once you're on v1.1.1, the prompt stops.</p>
+                <p>No feature changes from v1.1.0. Pure metadata cleanup.</p>
+            ]]></description>
+            <enclosure
+                url="https://github.com/vitalune/sato/releases/download/v1.1.1/Sato-1.1.1.dmg"
+                length="66034198"
+                type="application/octet-stream"
+                sparkle:edSignature="GMqi3D5ZeRWXz0+6Re8gW1SsNbyj2hsMO2qEQo1hOrWwIKCpZ0OIZS1Gz97tRNylIICTL8OliASW8MvwMFJxBA==" />
+        </item>
+        <item>
             <title>Version 1.1.0</title>
             <pubDate>Fri, 24 Apr 2026 23:32:44 -0400</pubDate>
-            <sparkle:version>11000</sparkle:version>
+            <sparkle:version>10100</sparkle:version>
             <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
             <description><![CDATA[
