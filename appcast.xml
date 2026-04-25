@@ -6,6 +6,31 @@
         <description>Most recent updates to Sato</description>
         <language>en</language>
         <item>
+            <title>Version 1.1.0</title>
+            <pubDate>Fri, 24 Apr 2026 23:32:44 -0400</pubDate>
+            <sparkle:version>11000</sparkle:version>
+            <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <h2>Multi-Provider AI Support</h2>
+                <p>Sato now talks to more than just Claude. Pick from Anthropic, OpenAI, or Ollama, and switch between models without leaving the menu bar.</p>
+                <h3>What's new</h3>
+                <ul>
+                    <li>Three AI providers: Anthropic (Opus 4.7, Sonnet 4.6, Haiku 4.5), OpenAI (GPT-5.4, Mini, Nano), and Ollama (local or cloud)</li>
+                    <li>Context Profiles can override your default provider and model</li>
+                    <li>Markdown now renders properly in responses</li>
+                    <li>Fixed permissions screen getting stuck after granting Screen Recording</li>
+                    <li>Stable bundle identifier going forward</li>
+                </ul>
+                <p><strong>Heads up:</strong> Bundle identifier changed under the hood, so macOS will ask for permissions one more time on first launch. After this release, future updates are seamless.</p>
+            ]]></description>
+            <enclosure
+                url="https://github.com/vitalune/sato/releases/download/v1.1.0/Sato-1.1.0.dmg"
+                length="66034188"
+                type="application/octet-stream"
+                sparkle:edSignature="i+S/S+R1S5J+oL7qaq7SB4MB3ei31aAjpQK5gphvjXeHeJLTKzbVM2hU8E7US3ZA54nHLqkXWX9Gl7CY3QBLBA==" />
+        </item>
+        <item>
             <title>Version 1.0.1</title>
             <pubDate>Fri, 24 Apr 2026 03:25:00 +0000</pubDate>
             <sparkle:version>10001</sparkle:version>
