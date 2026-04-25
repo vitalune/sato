@@ -179,29 +179,20 @@ final class CompanionManager: ObservableObject {
         currentResponseTask?.cancel()
         currentResponseTask = Task {
             do {
-                guard let apiKey = KeychainHelper.loadAnthropicAPIKey(), !apiKey.isEmpty else {
-                    chatSidebarMessages[assistantMessageIndex].text = "No API key configured. Open the menu bar panel and paste your Anthropic API key."
-                    chatSidebarIsStreaming = false
-                    if !self.isStealthModeEnabled {
-                        self.spriteAnimationManager.stopMessageDeliveredLoop()
-                    }
-                    return
-                }
-
                 let systemPrompt = self.buildTextModeSystemPrompt()
 
-                // Build conversation history for the API call — include the original
-                // screenshot context from the first exchange plus all follow-ups
-                let historyForAPI = conversationHistory.map { entry in
-                    (userText: entry.userTranscript, assistantResponse: entry.assistantResponse)
-                }
-
-                let responseText = try await ClaudeAPI.analyzeImageDirectStreaming(
-                    apiKey: apiKey,
+                let messages = self.buildProviderMessages(
                     imageData: assistCroppedImageData,
+                    conversationHistory: conversationHistory,
+                    currentUserPrompt: trimmedText
+                )
+
+                let profileOverride = self.activeProfileOverride
+                let responseText = try await self.providerManager.streamChat(
+                    messages: messages,
                     systemPrompt: systemPrompt,
-                    conversationHistory: historyForAPI,
-                    userPrompt: trimmedText,
+                    overrideProviderID: profileOverride?.providerID,
+                    overrideModelID: profileOverride?.modelID,
                     onTextChunk: { [weak self] accumulatedText in
                         guard let self, assistantMessageIndex < self.chatSidebarMessages.count else { return }
                         self.chatSidebarMessages[assistantMessageIndex].text = accumulatedText
@@ -280,6 +271,12 @@ final class CompanionManager: ObservableObject {
     /// Whether the user has stored an Anthropic API key in the Keychain.
     @Published var hasAnthropicAPIKey: Bool = KeychainHelper.loadAnthropicAPIKey() != nil
 
+    /// Whether the user has stored an OpenAI API key in the Keychain.
+    @Published var hasOpenAIAPIKey: Bool = KeychainHelper.hasAPIKey(for: .openai)
+
+    /// Whether the user has stored an Ollama Cloud API key in the Keychain.
+    @Published var hasOllamaCloudAPIKey: Bool = KeychainHelper.hasAPIKey(for: .ollamaCloud)
+
     func saveAnthropicAPIKey(_ key: String) {
         let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedKey.isEmpty {
@@ -288,6 +285,28 @@ final class CompanionManager: ObservableObject {
         } else {
             KeychainHelper.saveAnthropicAPIKey(trimmedKey)
             hasAnthropicAPIKey = true
+        }
+    }
+
+    func saveOpenAIAPIKey(_ key: String) {
+        let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedKey.isEmpty {
+            KeychainHelper.deleteAPIKey(for: .openai)
+            hasOpenAIAPIKey = false
+        } else {
+            KeychainHelper.saveAPIKey(trimmedKey, for: .openai)
+            hasOpenAIAPIKey = true
+        }
+    }
+
+    func saveOllamaCloudAPIKey(_ key: String) {
+        let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedKey.isEmpty {
+            KeychainHelper.deleteAPIKey(for: .ollamaCloud)
+            hasOllamaCloudAPIKey = false
+        } else {
+            KeychainHelper.saveAPIKey(trimmedKey, for: .ollamaCloud)
+            hasOllamaCloudAPIKey = true
         }
     }
 
@@ -315,6 +334,7 @@ final class CompanionManager: ObservableObject {
     let overlayWindowManager = OverlayWindowManager()
     let spriteAnimationManager = SpriteAnimationManager()
     let contextManager = ContextManager()
+    let providerManager = ProviderManager()
 
     /// Name of the currently active context profile, for display in the speech bubble header.
     var activeContextProfileName: String? {
@@ -365,12 +385,9 @@ final class CompanionManager: ObservableObject {
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
 
-    /// The Claude model used for responses. Persisted to UserDefaults.
-    @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
-
-    func setSelectedModel(_ model: String) {
-        selectedModel = model
-        UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
+    /// The model ID used for the current provider. Delegates to ProviderManager.
+    var selectedModel: String {
+        providerManager.currentModelID
     }
 
     /// When enabled, the Samoyed sprite is hidden but the AI assistant
@@ -799,24 +816,25 @@ final class CompanionManager: ObservableObject {
             spriteAnimationManager.startMessageDeliveredLoop()
         }
 
-        print("💬 Assist: sending question to Claude: \(questionText)")
+        print("💬 Assist: sending question via \(providerManager.currentProvider.displayName): \(questionText)")
 
         currentResponseTask?.cancel()
         currentResponseTask = Task {
             do {
-                guard let apiKey = KeychainHelper.loadAnthropicAPIKey(), !apiKey.isEmpty else {
-                    assistResponseText = "No API key configured. Open the menu bar panel and paste your Anthropic API key."
-                    assistResponseIsStreaming = false
-                    return
-                }
-
                 let systemPrompt = self.buildTextModeSystemPrompt()
 
-                let responseText = try await ClaudeAPI.analyzeImageDirectStreaming(
-                    apiKey: apiKey,
+                let messages = self.buildProviderMessages(
                     imageData: imageData,
+                    conversationHistory: [],
+                    currentUserPrompt: questionText
+                )
+
+                let profileOverride = self.activeProfileOverride
+                let responseText = try await self.providerManager.streamChat(
+                    messages: messages,
                     systemPrompt: systemPrompt,
-                    userPrompt: questionText,
+                    overrideProviderID: profileOverride?.providerID,
+                    overrideModelID: profileOverride?.modelID,
                     onTextChunk: { [weak self] accumulatedText in
                         self?.assistResponseText = accumulatedText
                     }
@@ -853,7 +871,7 @@ final class CompanionManager: ObservableObject {
                     self.spriteAnimationManager.stopMessageDeliveredLoop()
                 }
             } catch {
-                print("⚠️ Assist: Claude error: \(error)")
+                print("⚠️ Assist error: \(error)")
                 assistResponseText = "Error: \(error.localizedDescription)"
                 assistResponseIsStreaming = false
                 if !self.isStealthModeEnabled {
@@ -970,6 +988,37 @@ final class CompanionManager: ObservableObject {
     /// Builds the full system prompt for text mode with active profile context.
     private func buildTextModeSystemPrompt() -> String {
         appendActiveProfileContext(to: Self.textModeSystemPrompt)
+    }
+
+    /// Returns the active profile's provider/model override, if set.
+    private var activeProfileOverride: (providerID: String, modelID: String)? {
+        guard let profile = contextManager.activeProfile,
+              let providerID = profile.overrideProviderID,
+              let modelID = profile.overrideModelID
+        else {
+            return nil
+        }
+        return (providerID, modelID)
+    }
+
+    /// Converts conversation history and the current user prompt into the
+    /// unified AIProviderMessage array expected by all providers.
+    private func buildProviderMessages(
+        imageData: Data?,
+        conversationHistory: [(userTranscript: String, assistantResponse: String)],
+        currentUserPrompt: String
+    ) -> [AIProviderMessage] {
+        var messages: [AIProviderMessage] = []
+
+        for entry in conversationHistory {
+            messages.append(AIProviderMessage(role: .user, text: entry.userTranscript, images: nil))
+            messages.append(AIProviderMessage(role: .assistant, text: entry.assistantResponse, images: nil))
+        }
+
+        let images: [Data]? = imageData.map { [$0] }
+        messages.append(AIProviderMessage(role: .user, text: currentUserPrompt, images: images))
+
+        return messages
     }
 
     /// In stealth mode, waits for any pointing animation to finish, then
@@ -1237,11 +1286,6 @@ final class CompanionManager: ObservableObject {
     func performOnboardingDemoInteraction() {
         Task {
             do {
-                guard let apiKey = KeychainHelper.loadAnthropicAPIKey(), !apiKey.isEmpty else {
-                    print("🎯 Onboarding demo: no API key configured")
-                    return
-                }
-
                 let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
 
                 // Only send the cursor screen so Claude can't pick something
@@ -1251,12 +1295,17 @@ final class CompanionManager: ObservableObject {
                     return
                 }
 
-                let fullResponseText = try await ClaudeAPI.analyzeImageDirectStreaming(
-                    apiKey: apiKey,
-                    imageData: cursorScreenCapture.imageData,
+                let onboardingMessages = [
+                    AIProviderMessage(
+                        role: .user,
+                        text: "look around my screen and find something interesting to point at (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)",
+                        images: [cursorScreenCapture.imageData]
+                    ),
+                ]
+
+                let fullResponseText = try await self.providerManager.streamChat(
+                    messages: onboardingMessages,
                     systemPrompt: Self.onboardingDemoSystemPrompt,
-                    userPrompt: "look around my screen and find something interesting to point at (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)",
-                    model: selectedModel,
                     onTextChunk: { _ in }
                 )
 

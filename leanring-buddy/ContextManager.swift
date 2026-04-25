@@ -18,6 +18,8 @@ struct ContextProfile: Identifiable, Codable, Equatable {
     var isActive: Bool
     var createdAt: Date
     var updatedAt: Date
+    var overrideProviderID: String?
+    var overrideModelID: String?
 }
 
 @MainActor
@@ -61,7 +63,7 @@ final class ContextManager: ObservableObject {
 
     // MARK: - CRUD
 
-    func addProfile(name: String, description: String, instructions: String) {
+    func addProfile(name: String, description: String, instructions: String, overrideProviderID: String? = nil, overrideModelID: String? = nil) {
         let trimmedInstructions = String(instructions.prefix(Self.maxInstructionsLength))
         let newProfile = ContextProfile(
             id: UUID(),
@@ -70,19 +72,23 @@ final class ContextManager: ObservableObject {
             instructions: trimmedInstructions,
             isActive: false,
             createdAt: Date(),
-            updatedAt: Date()
+            updatedAt: Date(),
+            overrideProviderID: overrideProviderID,
+            overrideModelID: overrideModelID
         )
         profiles.append(newProfile)
         saveProfiles()
     }
 
-    func updateProfile(id: UUID, name: String, description: String, instructions: String) {
+    func updateProfile(id: UUID, name: String, description: String, instructions: String, overrideProviderID: String? = nil, overrideModelID: String? = nil) {
         guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
         let trimmedInstructions = String(instructions.prefix(Self.maxInstructionsLength))
         profiles[index].name = name
         profiles[index].description = description
         profiles[index].instructions = trimmedInstructions
         profiles[index].updatedAt = Date()
+        profiles[index].overrideProviderID = overrideProviderID
+        profiles[index].overrideModelID = overrideModelID
         saveProfiles()
     }
 

@@ -148,7 +148,13 @@ struct ChatSidebarView: View {
 
             // Message bubble
             if !message.text.isEmpty {
-                Text(message.text)
+                Group {
+                    if message.role == .assistant && !isAssistantMessageCurrentlyStreaming(message: message) {
+                        Text(MarkdownRenderer.render(message.text))
+                    } else {
+                        Text(message.text)
+                    }
+                }
                     .font(.system(size: 13))
                     .foregroundColor(message.role == .user ? .white : DS.Colors.textPrimary)
                     .textSelection(.enabled)
@@ -224,6 +230,11 @@ struct ChatSidebarView: View {
     }
 
     // MARK: - Helpers
+
+    private func isAssistantMessageCurrentlyStreaming(message: ChatSidebarMessage) -> Bool {
+        guard companionManager.chatSidebarIsStreaming else { return false }
+        return message.id == companionManager.chatSidebarMessages.last?.id
+    }
 
     private func submitFollowUp() {
         let trimmedText = followUpInputText.trimmingCharacters(in: .whitespacesAndNewlines)

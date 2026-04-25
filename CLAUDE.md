@@ -5,14 +5,14 @@
 
 ## Overview
 
-macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion controls. Uses ctrl+option hotkey to trigger a text-based assist flow: screenshot selection → text question → Claude streaming response in a speech bubble. A Samoyed dog sprite companion lives on screen and flies to the cursor during interactions. The user provides their own Anthropic API key — all API calls go directly to Anthropic (no proxy).
+macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion controls. Uses ctrl+option hotkey to trigger a text-based assist flow: screenshot selection → text question → AI streaming response in a speech bubble. A Samoyed dog sprite companion lives on screen and flies to the cursor during interactions. Supports multiple AI providers: Anthropic, OpenAI, and Ollama (local + cloud). Users pick their provider and model in the config panel. All API calls go directly to provider APIs (no proxy).
 
 ## Architecture
 
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) direct to Anthropic API with SSE streaming. User provides their own API key stored in Keychain.
+- **AI Chat**: Multi-provider support via `AIProvider` protocol. Anthropic (Claude Sonnet 4.6 default), OpenAI (GPT-5.4 via Responses API), Ollama Local (auto-detected models), and Ollama Cloud (qwen3-vl). User provides their own API key per provider, stored in Keychain. Provider selection and model managed by `ProviderManager`.
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
@@ -28,17 +28,19 @@ macOS menu bar companion app. Lives entirely in the macOS status bar (no dock ic
 
 **Transient Cursor Mode**: When stealth mode is on, pressing the hotkey fades in the cursor overlay for the duration of the interaction (screenshot → question → response → optional pointing), then fades it out automatically after 1 second of inactivity.
 
-**Context Profiles**: Users create named context profiles via the config panel that customize Sato's behavior. Each profile contains plain-English instructions injected into the Claude system prompt. Profiles are stored as JSON in `~/Library/Application Support/Sato/profiles.json` and persist across app restarts. Only one profile can be active at a time. Managed by `ContextManager.swift`.
+**Context Profiles**: Users create named context profiles via the config panel that customize Sato's behavior. Each profile contains plain-English instructions injected into the system prompt. Profiles can optionally override the global provider and model (e.g. use GPT-5.4 Nano for a "Quick Review" profile while defaulting to Anthropic globally). Profiles are stored as JSON in `~/Library/Application Support/Sato/profiles.json` and persist across app restarts. Only one profile can be active at a time. Managed by `ContextManager.swift`.
+
+**Multi-Provider Architecture**: All AI providers implement the `AIProvider` protocol (defined in `AIProviders/AIProvider.swift`). Each provider handles its own API format: Anthropic uses SSE with `system` parameter, OpenAI uses SSE with the Responses API `instructions` field, Ollama uses NDJSON with `role: "system"` messages. `ProviderManager` is the centralized singleton that tracks the selected provider, model, and credentials. Context profile overrides are resolved at call time via `ProviderManager.resolveProviderAndModel()`.
 
 ## Key Files
 
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1280 | Central state machine. Owns shortcut monitoring, screen capture, Claude API, overlay management, sprite animation manager, context manager, and chat sidebar state. Tracks conversation history (configurable 5-50, default 30), model selection, and cursor visibility. Coordinates hotkey → screenshot selection → text question → Claude streaming → speech bubble pipeline, plus chat sidebar follow-up conversations. Injects active context profile into system prompts. |
+| `CompanionManager.swift` | ~1320 | Central state machine. Owns shortcut monitoring, screen capture, provider manager, overlay management, sprite animation manager, context manager, and chat sidebar state. Tracks conversation history (configurable 5-50, default 30), cursor visibility, and per-provider API key state. Coordinates hotkey → screenshot selection → text question → AI streaming → speech bubble pipeline via `ProviderManager.streamChat()`, plus chat sidebar follow-up conversations. Injects active context profile into system prompts and resolves profile-level provider/model overrides. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
-| `CompanionPanelView.swift` | ~1170 | SwiftUI panel content for the menu bar dropdown. Shows companion status, model picker (Sonnet/Opus), sprite picker, API key input, context profiles UI, conversation history controls, "Always Open Chat" toggle, permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
-| `ContextManager.swift` | ~180 | Manages persistent Context Profiles for customizing Sato's behavior. Stores profiles as JSON in `~/Library/Application Support/Sato/profiles.json`. Provides CRUD operations, active profile switching, and starter profile creation on first launch. |
+| `CompanionPanelView.swift` | ~1680 | SwiftUI panel content for the menu bar dropdown. Shows companion status, multi-provider AI model picker (Anthropic/OpenAI/Ollama with per-provider model selection and API key fields), sprite picker, context profiles UI with provider/model override support, conversation history controls, "Always Open Chat" toggle, permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
+| `ContextManager.swift` | ~185 | Manages persistent Context Profiles for customizing Sato's behavior. Each profile can optionally override the global AI provider and model. Stores profiles as JSON in `~/Library/Application Support/Sato/profiles.json`. Provides CRUD operations, active profile switching, and starter profile creation on first launch. |
 | `OverlayWindow.swift` | ~930 | Full-screen transparent overlay hosting the sprite, speech bubbles, and chat sidebar. Contains OverlayWindowManager which manages per-screen overlays, interactive overlays for screenshot/text input, and the chat sidebar window with slide-in/out animation. Handles element-pointing, multi-monitor coordinate mapping, and assist flow phase transitions. |
 | `ChatSidebarView.swift` | ~270 | Slide-in chat sidebar for reading full responses and sending follow-up messages. Anchored to right screen edge with blur background. Shows conversation with screenshot thumbnail, user/assistant message bubbles with timestamps, and auto-focused text input for follow-ups. |
 | `SpeechBubbleView.swift` | ~130 | Speech bubble displaying Claude's response above the sprite. Shows active context profile name as header. Detects content overflow and shows a "Show more" button that opens the chat sidebar. |
@@ -48,12 +50,19 @@ macOS menu bar companion app. Lives entirely in the macOS status bar (no dock ic
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble displayed next to the cursor in the overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
 | `GlobalPushToTalkShortcutMonitor.swift` | ~160 | System-wide Ctrl+Option hotkey monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions for the assist flow. |
-| `ClaudeAPI.swift` | ~130 | Claude vision API client. Static method for direct Anthropic API streaming with SSE, image MIME detection, conversation history support. |
+| `ClaudeAPI.swift` | ~130 | Legacy Claude vision API client. Retained for reference; all new streaming goes through `AIProviders/AnthropicProvider.swift` via `ProviderManager`. |
+| `AIProviders/AIProvider.swift` | ~40 | Unified protocol for all AI providers. Defines `AIProviderChunk`, `AIProviderMessage`, and the `AIProvider` protocol with `streamChat()`. |
+| `AIProviders/AIProviderError.swift` | ~45 | Shared error types for all providers with provider-specific guidance messages. |
+| `AIProviders/AnthropicProvider.swift` | ~140 | Anthropic Claude API implementation. SSE streaming, vision support, models: Opus 4.7, Sonnet 4.6, Haiku 4.5. |
+| `AIProviders/OpenAIProvider.swift` | ~155 | OpenAI Responses API (`/v1/responses`) implementation. SSE streaming, vision via base64 data URLs, models: GPT-5.4, GPT-5.4 Mini, GPT-5.4 Nano. |
+| `AIProviders/OllamaLocalProvider.swift` | ~175 | Local Ollama daemon (`localhost:11434`) implementation. NDJSON streaming, dynamic model discovery via `/api/tags`, vision detection via `/api/show`. |
+| `AIProviders/OllamaCloudProvider.swift` | ~120 | Ollama Cloud (`ollama.com`) implementation. NDJSON streaming with Bearer auth. Single model for v1.1.0: `qwen3-vl-cloud`. |
+| `AIProviders/ProviderManager.swift` | ~135 | Centralized singleton managing active provider/model selection, UserDefaults persistence, Ollama discovery, context profile override resolution, and the unified `streamChat()` helper. |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
 | `DesignSystem.swift` | ~870 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
 | `ClickyAnalytics.swift` | ~90 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
-| `KeychainHelper.swift` | ~50 | Saves/loads the user's Anthropic API key in the macOS Keychain. |
+| `KeychainHelper.swift` | ~80 | Saves/loads API keys for multiple providers (Anthropic, OpenAI, Ollama Cloud) in the macOS Keychain. Keyed by `KeychainProvider` enum. Legacy `saveAnthropicAPIKey`/`loadAnthropicAPIKey` convenience methods preserved for backward compatibility. |
 
 ## Build & Run
 

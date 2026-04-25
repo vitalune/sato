@@ -13,8 +13,6 @@ struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     let updaterController: UpdaterController
     @State private var emailInput: String = ""
-    @State private var apiKeyInput: String = ""
-    @State private var isApiKeyVisible: Bool = false
 
     // MARK: - Context Profile Editor State
     @State private var isEditingProfile: Bool = false
@@ -22,7 +20,15 @@ struct CompanionPanelView: View {
     @State private var profileNameInput: String = ""
     @State private var profileDescriptionInput: String = ""
     @State private var profileInstructionsInput: String = ""
+    @State private var profileUseOverride: Bool = false
+    @State private var profileOverrideProviderID: String = "anthropic"
+    @State private var profileOverrideModelID: String = AnthropicProvider.defaultModelID
     @State private var panelOpacity: Double = 0
+
+    // Tracks whether the user has already clicked "Grant" for Screen Recording,
+    // so the button can switch to "Quit & Relaunch" (macOS requires a restart
+    // for Screen Recording permission changes to take effect).
+    @State private var hasClickedScreenRecordingGrant: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -46,12 +52,6 @@ struct CompanionPanelView: View {
                     .frame(height: 8)
 
                 spritePickerRow
-                    .padding(.horizontal, 16)
-
-                Spacer()
-                    .frame(height: 8)
-
-                apiKeyRow
                     .padding(.horizontal, 16)
 
                 sectionDivider
@@ -216,7 +216,7 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(DS.Colors.textSecondary)
 
-                Text("Some permissions were revoked. Grant all four below to keep using Sato.")
+                Text(revokedPermissionsMessage)
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -239,6 +239,21 @@ struct CompanionPanelView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var revokedPermissionsMessage: String {
+        var revokedCount = 0
+        if !companionManager.hasAccessibilityPermission { revokedCount += 1 }
+        if !companionManager.hasScreenRecordingPermission { revokedCount += 1 }
+        if companionManager.hasScreenRecordingPermission && !companionManager.hasScreenContentPermission {
+            revokedCount += 1
+        }
+
+        if revokedCount == 1 {
+            return "One permission was revoked. Grant it below to keep using Sato."
+        } else {
+            return "Some permissions were revoked. Grant them below to keep using Sato."
         }
     }
 
@@ -408,11 +423,19 @@ struct CompanionPanelView: View {
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(DS.Colors.textSecondary)
 
-                    Text(isGranted
-                         ? "Only takes a screenshot when you use the hotkey"
-                         : "Quit and reopen after granting")
-                        .font(.system(size: 10))
-                        .foregroundColor(DS.Colors.textTertiary)
+                    if isGranted {
+                        Text("Only takes a screenshot when you use the hotkey")
+                            .font(.system(size: 10))
+                            .foregroundColor(DS.Colors.textTertiary)
+                    } else if hasClickedScreenRecordingGrant {
+                        Text("After enabling in Settings, click Quit & Relaunch")
+                            .font(.system(size: 10))
+                            .foregroundColor(DS.Colors.textTertiary)
+                    } else {
+                        Text("Requires app restart after granting")
+                            .font(.system(size: 10))
+                            .foregroundColor(DS.Colors.textTertiary)
+                    }
                 }
             }
 
@@ -427,12 +450,28 @@ struct CompanionPanelView: View {
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(DS.Colors.success)
                 }
+            } else if hasClickedScreenRecordingGrant {
+                Button(action: {
+                    quitAndRelaunch()
+                }) {
+                    Text("Quit & Relaunch")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(DS.Colors.textOnAccent)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule()
+                                .fill(DS.Colors.accent)
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
             } else {
                 Button(action: {
-                    // Triggers the native macOS screen recording prompt on first
-                    // attempt (auto-adds app to the list), then opens System Settings
-                    // on subsequent attempts.
                     WindowPositionManager.requestScreenRecordingPermission()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        hasClickedScreenRecordingGrant = true
+                    }
                 }) {
                     Text("Grant")
                         .font(.system(size: 11, weight: .semibold))
@@ -449,6 +488,15 @@ struct CompanionPanelView: View {
             }
         }
         .padding(.vertical, 6)
+    }
+
+    private func quitAndRelaunch() {
+        let bundlePath = Bundle.main.bundlePath
+        let task = Process()
+        task.launchPath = "/bin/sh"
+        task.arguments = ["-c", "sleep 1 && open \"\(bundlePath)\""]
+        try? task.run()
+        NSApplication.shared.terminate(nil)
     }
 
     private var screenContentPermissionRow: some View {
@@ -610,16 +658,23 @@ struct CompanionPanelView: View {
     // MARK: - Model Picker
 
     private var modelPickerRow: some View {
-        HStack {
-            Text("Model")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
+        aiModelSection
+    }
 
-            Spacer()
+    // MARK: - AI Model Section (Multi-Provider)
 
+    @ViewBuilder
+    private var aiModelSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("AI MODEL")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundColor(DS.Colors.textTertiary)
+
+            // Provider segmented picker
             HStack(spacing: 0) {
-                modelOptionButton(label: "Sonnet", modelID: "claude-sonnet-4-6")
-                modelOptionButton(label: "Opus", modelID: "claude-opus-4-6")
+                providerOptionButton(label: "Anthropic", providerID: "anthropic")
+                providerOptionButton(label: "OpenAI", providerID: "openai")
+                providerOptionButton(label: "Ollama", providerID: "ollama")
             }
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -629,14 +684,38 @@ struct CompanionPanelView: View {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
             )
+
+            // Provider-specific settings
+            switch companionManager.providerManager.selectedProviderID {
+            case "openai":
+                openAISettingsSection
+            case "ollama", "ollama-local", "ollama-cloud":
+                ollamaSettingsSection
+            default:
+                anthropicSettingsSection
+            }
         }
         .padding(.vertical, 4)
     }
 
-    private func modelOptionButton(label: String, modelID: String) -> some View {
-        let isSelected = companionManager.selectedModel == modelID
+    private func providerOptionButton(label: String, providerID: String) -> some View {
+        let selectedID = companionManager.providerManager.selectedProviderID
+        let isSelected: Bool
+        if providerID == "ollama" {
+            isSelected = selectedID == "ollama-local" || selectedID == "ollama-cloud"
+        } else {
+            isSelected = selectedID == providerID
+        }
+
         return Button(action: {
-            companionManager.setSelectedModel(modelID)
+            if providerID == "ollama" {
+                // Default to local Ollama when clicking the Ollama tab
+                let currentOllamaMode = (selectedID == "ollama-local" || selectedID == "ollama-cloud") ? selectedID : ollamaMode
+                companionManager.providerManager.selectedProviderID = currentOllamaMode
+                companionManager.providerManager.refreshOllamaLocalStatus()
+            } else {
+                companionManager.providerManager.selectedProviderID = providerID
+            }
         }) {
             Text(label)
                 .font(.system(size: 11, weight: .medium))
@@ -650,6 +729,377 @@ struct CompanionPanelView: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
+    }
+
+    // MARK: - Anthropic Settings
+
+    private var anthropicSettingsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            providerAPIKeyField(
+                label: "Anthropic API Key",
+                placeholder: "sk-ant-...",
+                hasKey: companionManager.hasAnthropicAPIKey,
+                onSave: { companionManager.saveAnthropicAPIKey($0) }
+            )
+
+            HStack {
+                Text("Model")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                HStack(spacing: 0) {
+                    ForEach(AnthropicProvider.availableModels, id: \.id) { model in
+                        anthropicModelButton(model: model)
+                    }
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+            }
+        }
+    }
+
+    private func anthropicModelButton(model: AnthropicModel) -> some View {
+        let isSelected = companionManager.providerManager.anthropicModelID == model.id
+        // Short label: strip "Claude " prefix for compact display
+        let shortLabel = model.displayName.replacingOccurrences(of: "Claude ", with: "")
+        return Button(action: {
+            companionManager.providerManager.anthropicModelID = model.id
+        }) {
+            Text(shortLabel)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    // MARK: - OpenAI Settings
+
+    private var openAISettingsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            providerAPIKeyField(
+                label: "OpenAI API Key",
+                placeholder: "sk-...",
+                hasKey: companionManager.hasOpenAIAPIKey,
+                onSave: { companionManager.saveOpenAIAPIKey($0) }
+            )
+
+            HStack {
+                Text("Model")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                HStack(spacing: 0) {
+                    ForEach(OpenAIProvider.availableModels, id: \.id) { model in
+                        openAIModelButton(model: model)
+                    }
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+            }
+        }
+    }
+
+    private func openAIModelButton(model: OpenAIModel) -> some View {
+        let isSelected = companionManager.providerManager.openAIModelID == model.id
+        return Button(action: {
+            companionManager.providerManager.openAIModelID = model.id
+        }) {
+            Text(model.displayName)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    // MARK: - Ollama Settings
+
+    @State private var ollamaMode: String = UserDefaults.standard.string(forKey: "selectedProvider")?.hasPrefix("ollama") == true
+        ? (UserDefaults.standard.string(forKey: "selectedProvider") ?? "ollama-local")
+        : "ollama-local"
+
+    private var ollamaSettingsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Local / Cloud picker
+            HStack {
+                Text("Mode")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                HStack(spacing: 0) {
+                    ollamaModeButton(label: "Local", modeID: "ollama-local")
+                    ollamaModeButton(label: "Cloud", modeID: "ollama-cloud")
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+            }
+
+            if ollamaMode == "ollama-local" {
+                ollamaLocalSettingsSection
+            } else {
+                ollamaCloudSettingsSection
+            }
+        }
+    }
+
+    private func ollamaModeButton(label: String, modeID: String) -> some View {
+        let isSelected = ollamaMode == modeID
+        return Button(action: {
+            ollamaMode = modeID
+            companionManager.providerManager.selectedProviderID = modeID
+            if modeID == "ollama-local" {
+                companionManager.providerManager.refreshOllamaLocalStatus()
+            }
+        }) {
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(isSelected ? Color.white.opacity(0.1) : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+    }
+
+    private var ollamaLocalSettingsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Status indicator
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(companionManager.providerManager.ollamaLocalIsReachable ? DS.Colors.success : Color.red.opacity(0.7))
+                    .frame(width: 6, height: 6)
+
+                if companionManager.providerManager.ollamaLocalIsReachable {
+                    Text("Ollama running")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.success)
+                } else {
+                    Text("Start Ollama to use local models")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(Color.red.opacity(0.7))
+                }
+
+                Spacer()
+
+                Button(action: {
+                    companionManager.providerManager.refreshOllamaLocalStatus()
+                }) {
+                    Text("Check")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .stroke(DS.Colors.borderSubtle, lineWidth: 0.8)
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+            }
+
+            if companionManager.providerManager.ollamaLocalIsReachable && !companionManager.providerManager.ollamaLocalModels.isEmpty {
+                // Model picker dropdown
+                HStack {
+                    Text("Model")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+
+                    Spacer()
+
+                    Picker("", selection: Binding(
+                        get: { companionManager.providerManager.ollamaLocalModelName },
+                        set: { companionManager.providerManager.ollamaLocalModelName = $0 }
+                    )) {
+                        ForEach(companionManager.providerManager.ollamaLocalModels) { model in
+                            HStack {
+                                Text(model.name)
+                                if model.supportsVision {
+                                    Text("Vision")
+                                        .font(.system(size: 9))
+                                        .foregroundColor(DS.Colors.accent)
+                                }
+                            }
+                            .tag(model.name)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: 180)
+                }
+            }
+        }
+        .onAppear {
+            companionManager.providerManager.refreshOllamaLocalStatus()
+        }
+    }
+
+    private var ollamaCloudSettingsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            providerAPIKeyField(
+                label: "Ollama Cloud API Key",
+                placeholder: "API key from ollama.com",
+                hasKey: companionManager.hasOllamaCloudAPIKey,
+                onSave: { companionManager.saveOllamaCloudAPIKey($0) }
+            )
+
+            HStack {
+                Text("Model")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                Text(OllamaCloudProvider.availableModels.first?.displayName ?? OllamaCloudProvider.defaultModelID)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textPrimary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color.white.opacity(0.1))
+                    )
+            }
+        }
+    }
+
+    // MARK: - Shared API Key Field
+
+    @State private var providerKeyInput: String = ""
+    @State private var isProviderKeyVisible: Bool = false
+
+    private func providerAPIKeyField(
+        label: String,
+        placeholder: String,
+        hasKey: Bool,
+        onSave: @escaping (String) -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(label)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+
+                Spacer()
+
+                if hasKey {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(DS.Colors.success)
+                            .frame(width: 6, height: 6)
+                        Text("Saved")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(DS.Colors.success)
+                    }
+                } else {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(Color.red.opacity(0.7))
+                            .frame(width: 6, height: 6)
+                        Text("Not Set")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(Color.red.opacity(0.7))
+                    }
+                }
+            }
+
+            HStack(spacing: 6) {
+                ZStack {
+                    if isProviderKeyVisible {
+                        TextField(placeholder, text: $providerKeyInput)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(DS.Colors.textPrimary)
+                    } else {
+                        SecureField(placeholder, text: $providerKeyInput)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(DS.Colors.textPrimary)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(
+                    RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                        .fill(Color.white.opacity(0.08))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+
+                Button(action: {
+                    isProviderKeyVisible.toggle()
+                }) {
+                    Image(systemName: isProviderKeyVisible ? "eye.slash" : "eye")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+
+                Button(action: {
+                    onSave(providerKeyInput)
+                    providerKeyInput = ""
+                }) {
+                    Text("Save")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(DS.Colors.textOnAccent)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(
+                            Capsule()
+                                .fill(providerKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                      ? DS.Colors.accent.opacity(0.4)
+                                      : DS.Colors.accent)
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .disabled(providerKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
     }
 
     // MARK: - Sprite Picker
@@ -703,95 +1153,6 @@ struct CompanionPanelView: View {
 
     // MARK: - API Key
 
-    private var apiKeyRow: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Anthropic API Key")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
-
-                Spacer()
-
-                if companionManager.hasAnthropicAPIKey {
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(DS.Colors.success)
-                            .frame(width: 6, height: 6)
-                        Text("Saved")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(DS.Colors.success)
-                    }
-                } else {
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(Color.red.opacity(0.7))
-                            .frame(width: 6, height: 6)
-                        Text("Not Set")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(Color.red.opacity(0.7))
-                    }
-                }
-            }
-
-            HStack(spacing: 6) {
-                ZStack {
-                    if isApiKeyVisible {
-                        TextField("sk-ant-...", text: $apiKeyInput)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundColor(DS.Colors.textPrimary)
-                    } else {
-                        SecureField("sk-ant-...", text: $apiKeyInput)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundColor(DS.Colors.textPrimary)
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(
-                    RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                        .fill(Color.white.opacity(0.08))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-                )
-
-                Button(action: {
-                    isApiKeyVisible.toggle()
-                }) {
-                    Image(systemName: isApiKeyVisible ? "eye.slash" : "eye")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(DS.Colors.textTertiary)
-                        .frame(width: 24, height: 24)
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-
-                Button(action: {
-                    companionManager.saveAnthropicAPIKey(apiKeyInput)
-                }) {
-                    Text("Save")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(DS.Colors.textOnAccent)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(
-                            Capsule()
-                                .fill(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                      ? DS.Colors.accent.opacity(0.4)
-                                      : DS.Colors.accent)
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-                .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
     // MARK: - Context Profiles
 
     private var contextProfilesSection: some View {
@@ -835,6 +1196,9 @@ struct CompanionPanelView: View {
                 profileNameInput = ""
                 profileDescriptionInput = ""
                 profileInstructionsInput = ""
+                profileUseOverride = false
+                profileOverrideProviderID = "anthropic"
+                profileOverrideModelID = AnthropicProvider.defaultModelID
                 isEditingProfile = true
             }) {
                 HStack(spacing: 6) {
@@ -884,6 +1248,9 @@ struct CompanionPanelView: View {
                 profileNameInput = profile.name
                 profileDescriptionInput = profile.description
                 profileInstructionsInput = profile.instructions
+                profileUseOverride = profile.overrideProviderID != nil
+                profileOverrideProviderID = profile.overrideProviderID ?? "anthropic"
+                profileOverrideModelID = profile.overrideModelID ?? AnthropicProvider.defaultModelID
                 isEditingProfile = true
             }) {
                 Image(systemName: "pencil")
@@ -987,6 +1354,61 @@ struct CompanionPanelView: View {
                     )
             }
 
+            // AI Model Override
+            VStack(alignment: .leading, spacing: 4) {
+                Text("AI MODEL OVERRIDE")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundColor(DS.Colors.textTertiary)
+
+                Toggle(isOn: $profileUseOverride) {
+                    Text("Use a specific model for this profile")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+                }
+                .toggleStyle(.switch)
+                .tint(DS.Colors.accent)
+                .scaleEffect(0.8, anchor: .leading)
+
+                if profileUseOverride {
+                    HStack {
+                        Text("Provider")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(DS.Colors.textTertiary)
+
+                        Spacer()
+
+                        Picker("", selection: $profileOverrideProviderID) {
+                            Text("Anthropic").tag("anthropic")
+                            Text("OpenAI").tag("openai")
+                            Text("Ollama Local").tag("ollama-local")
+                            Text("Ollama Cloud").tag("ollama-cloud")
+                        }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: 150)
+                        .onChange(of: profileOverrideProviderID) { _, newProviderID in
+                            profileOverrideModelID = defaultModelForProvider(newProviderID)
+                        }
+                    }
+
+                    HStack {
+                        Text("Model")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(DS.Colors.textTertiary)
+
+                        Spacer()
+
+                        Picker("", selection: $profileOverrideModelID) {
+                            ForEach(modelsForProvider(profileOverrideProviderID), id: \.self) { modelID in
+                                Text(displayNameForModel(modelID, provider: profileOverrideProviderID))
+                                    .tag(modelID)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: 150)
+                    }
+                }
+            }
+
             HStack {
                 Button(action: {
                     isEditingProfile = false
@@ -1029,22 +1451,60 @@ struct CompanionPanelView: View {
         }
     }
 
+    private func modelsForProvider(_ providerID: String) -> [String] {
+        switch providerID {
+        case "openai": return OpenAIProvider.availableModels.map(\.id)
+        case "ollama-local": return companionManager.providerManager.ollamaLocalModels.map(\.name)
+        case "ollama-cloud": return OllamaCloudProvider.availableModels.map(\.id)
+        default: return AnthropicProvider.availableModels.map(\.id)
+        }
+    }
+
+    private func defaultModelForProvider(_ providerID: String) -> String {
+        switch providerID {
+        case "openai": return OpenAIProvider.defaultModelID
+        case "ollama-cloud": return OllamaCloudProvider.defaultModelID
+        case "ollama-local": return companionManager.providerManager.ollamaLocalModels.first?.name ?? ""
+        default: return AnthropicProvider.defaultModelID
+        }
+    }
+
+    private func displayNameForModel(_ modelID: String, provider: String) -> String {
+        switch provider {
+        case "openai":
+            return OpenAIProvider.availableModels.first(where: { $0.id == modelID })?.displayName ?? modelID
+        case "anthropic":
+            return AnthropicProvider.availableModels.first(where: { $0.id == modelID })?.displayName ?? modelID
+        case "ollama-cloud":
+            return OllamaCloudProvider.availableModels.first(where: { $0.id == modelID })?.displayName ?? modelID
+        default:
+            return modelID
+        }
+    }
+
     private func saveProfileFromEditor() {
         let trimmedName = profileNameInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return }
+
+        let overrideProvider = profileUseOverride ? profileOverrideProviderID : nil
+        let overrideModel = profileUseOverride ? profileOverrideModelID : nil
 
         if let existingID = editingProfileID {
             companionManager.contextManager.updateProfile(
                 id: existingID,
                 name: trimmedName,
                 description: profileDescriptionInput.trimmingCharacters(in: .whitespacesAndNewlines),
-                instructions: profileInstructionsInput
+                instructions: profileInstructionsInput,
+                overrideProviderID: overrideProvider,
+                overrideModelID: overrideModel
             )
         } else {
             companionManager.contextManager.addProfile(
                 name: trimmedName,
                 description: profileDescriptionInput.trimmingCharacters(in: .whitespacesAndNewlines),
-                instructions: profileInstructionsInput
+                instructions: profileInstructionsInput,
+                overrideProviderID: overrideProvider,
+                overrideModelID: overrideModel
             )
         }
 

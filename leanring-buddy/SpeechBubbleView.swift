@@ -46,7 +46,13 @@ struct SpeechBubbleView: View {
                                 .foregroundColor(DS.Colors.textTertiary)
                         }
 
-                        Text(responseText)
+                        Group {
+                            if isStreaming {
+                                Text(responseText)
+                            } else {
+                                Text(MarkdownRenderer.render(responseText))
+                            }
+                        }
                             .font(.system(size: 13))
                             .foregroundColor(DS.Colors.textPrimary)
                             .textSelection(.enabled)

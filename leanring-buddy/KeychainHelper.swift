@@ -2,45 +2,51 @@
 //  KeychainHelper.swift
 //  leanring-buddy
 //
-//  Simple wrapper around the macOS Security framework for storing
-//  and retrieving the user's Anthropic API key in the system Keychain.
+//  Wrapper around the macOS Security framework for storing and retrieving
+//  API keys for multiple AI providers in the system Keychain.
 //
 
 import Foundation
 import Security
 
+enum KeychainProvider: String, CaseIterable {
+    case anthropic = "anthropic-api-key"
+    case openai = "openai-api-key"
+    case ollamaCloud = "ollama-cloud-api-key"
+}
+
 enum KeychainHelper {
 
     private static let serviceName = "com.petGPT-companion.clicky"
-    private static let anthropicAPIKeyAccount = "anthropic-api-key"
 
-    static func saveAnthropicAPIKey(_ apiKey: String) {
+    // MARK: - Multi-Provider API
+
+    static func saveAPIKey(_ apiKey: String, for provider: KeychainProvider) {
         guard let data = apiKey.data(using: .utf8) else { return }
 
-        // Delete any existing entry first to avoid errSecDuplicateItem
-        deleteAnthropicAPIKey()
+        deleteAPIKey(for: provider)
 
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: anthropicAPIKeyAccount,
+            kSecAttrAccount as String: provider.rawValue,
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
         ]
 
         let status = SecItemAdd(query as CFDictionary, nil)
         if status != errSecSuccess {
-            print("⚠️ Keychain: Failed to save API key, status: \(status)")
+            print("⚠️ Keychain: Failed to save \(provider.rawValue) key, status: \(status)")
         }
     }
 
-    static func loadAnthropicAPIKey() -> String? {
+    static func loadAPIKey(for provider: KeychainProvider) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: anthropicAPIKeyAccount,
+            kSecAttrAccount as String: provider.rawValue,
             kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
+            kSecMatchLimit as String: kSecMatchLimitOne,
         ]
 
         var result: AnyObject?
@@ -48,20 +54,39 @@ enum KeychainHelper {
 
         guard status == errSecSuccess,
               let data = result as? Data,
-              let apiKey = String(data: data, encoding: .utf8) else {
+              let apiKey = String(data: data, encoding: .utf8)
+        else {
             return nil
         }
 
         return apiKey
     }
 
-    static func deleteAnthropicAPIKey() {
+    static func deleteAPIKey(for provider: KeychainProvider) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: anthropicAPIKeyAccount
+            kSecAttrAccount as String: provider.rawValue,
         ]
 
         SecItemDelete(query as CFDictionary)
+    }
+
+    static func hasAPIKey(for provider: KeychainProvider) -> Bool {
+        loadAPIKey(for: provider) != nil
+    }
+
+    // MARK: - Legacy Anthropic Convenience (keeps existing call sites working during migration)
+
+    static func saveAnthropicAPIKey(_ apiKey: String) {
+        saveAPIKey(apiKey, for: .anthropic)
+    }
+
+    static func loadAnthropicAPIKey() -> String? {
+        loadAPIKey(for: .anthropic)
+    }
+
+    static func deleteAnthropicAPIKey() {
+        deleteAPIKey(for: .anthropic)
     }
 }
