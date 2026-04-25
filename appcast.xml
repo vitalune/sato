@@ -6,8 +6,29 @@
         <description>Most recent updates to Sato</description>
         <language>en</language>
         <item>
+            <title>Version 1.0.1</title>
+            <pubDate>Fri, 24 Apr 2026 03:25:00 +0000</pubDate>
+            <sparkle:version>10001</sparkle:version>
+            <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <description><![CDATA[
+                <h2>Signed & Notarized</h2>
+                <p>Sato is now signed with an Apple Developer ID and notarized by Apple. No more "unidentified developer" warning on first launch.</p>
+                <ul>
+                    <li>Apple Developer ID signed</li>
+                    <li>Notarized by Apple</li>
+                    <li>Smooth first-launch experience on macOS Sequoia and later</li>
+                </ul>
+            ]]></description>
+            <enclosure
+                url="https://github.com/vitalune/sato/releases/download/v1.0.1/Sato-1.0.1.dmg"
+                length="65730095"
+                type="application/octet-stream"
+                sparkle:edSignature="/6wGkYsPKEi9M9udvz53OjP7oMnC8tuKoccqb40hxz5KBZoAFrEHUnHwJl2mh5Uiit0Bz7KTtOMKcRNkdHvuCQ==" />
+        </item>
+        <item>
             <title>Version 1.1.0</title>
-            <pubDate>Fri, 24 Apr 2026 23:32:44 -0400</pubDate>
+            <pubDate>REPLACE_WITH_OUTPUT_OF_date_-R</pubDate>
             <sparkle:version>11000</sparkle:version>
             <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
