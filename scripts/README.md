@@ -40,6 +40,7 @@ brew install create-dmg
 
 # To use a different notary profile or Sparkle tool location:
 SATO_NOTARY_PROFILE=my-profile \
+SATO_DEVELOPER_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 SPARKLE_BIN=/path/to/Sparkle/bin \
 ./scripts/release.sh 1.2.0 ~/Desktop/Sato.app
 ```
@@ -50,10 +51,11 @@ The script:
 2. Verifies its Developer ID signature.
 3. Notarizes and staples the app.
 4. Creates `Sato-<version>.dmg`.
-5. Notarizes, staples, and Gatekeeper-validates the DMG.
-6. Signs the final DMG with Sparkle EdDSA.
-7. Generates and validates a staged `appcast.xml`.
-8. Writes release notes and all artifacts under
+5. Developer ID-signs the DMG.
+6. Notarizes, staples, and Gatekeeper-validates the DMG.
+7. Signs the final DMG with Sparkle EdDSA.
+8. Generates and validates a staged `appcast.xml`.
+9. Writes release notes and all artifacts under
    `build/release-candidate-v<version>/`.
 
 It never creates a git tag, GitHub Release, or website commit. Those actions

@@ -13,6 +13,7 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="${1:-}"
 EXPORTED_APP_PATH="${2:-}"
 NOTARY_PROFILE="${SATO_NOTARY_PROFILE:-sato-notarization}"
+DEVELOPER_IDENTITY="${SATO_DEVELOPER_IDENTITY:-Developer ID Application: Amir Valizadeh (UP52GQK38V)}"
 GITHUB_REPOSITORY="vitalune/sato"
 DMG_BACKGROUND="${PROJECT_DIR}/assets/dmg/background.png"
 
@@ -42,12 +43,19 @@ if [ "$(basename "$EXPORTED_APP_PATH")" != "Sato.app" ]; then
     exit 1
 fi
 
-for requiredCommand in create-dmg codesign ditto spctl stat xcrun; do
+for requiredCommand in create-dmg codesign ditto security spctl stat xcrun; do
     if ! command -v "$requiredCommand" >/dev/null 2>&1; then
         echo "Missing required command: $requiredCommand"
         exit 1
     fi
 done
+
+availableSigningIdentities="$(security find-identity -v -p codesigning)"
+if [[ "$availableSigningIdentities" != *"$DEVELOPER_IDENTITY"* ]]; then
+    echo "Developer ID signing identity not found: $DEVELOPER_IDENTITY"
+    echo "Set SATO_DEVELOPER_IDENTITY if the certificate name differs."
+    exit 1
+fi
 
 if [ ! -f "$DMG_BACKGROUND" ]; then
     echo "DMG background not found: $DMG_BACKGROUND"
@@ -163,6 +171,13 @@ if [ ! -f "$DMG_PATH" ]; then
     echo "DMG creation failed: ${DMG_PATH} was not produced"
     exit 1
 fi
+
+echo "Signing the DMG with Developer ID..."
+codesign --force \
+    --sign "$DEVELOPER_IDENTITY" \
+    --timestamp \
+    "$DMG_PATH"
+codesign --verify --verbose=2 "$DMG_PATH"
 
 echo "Submitting the DMG for notarization..."
 xcrun notarytool submit "$DMG_PATH" \
