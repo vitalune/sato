@@ -30,6 +30,8 @@ macOS menu bar companion app. Lives entirely in the macOS status bar (no dock ic
 
 **Context Profiles**: Users create named context profiles via the config panel that customize Sato's behavior. Each profile contains plain-English instructions injected into the system prompt. Profiles can optionally override the global provider and model (e.g. use GPT-5.4 Nano for a "Quick Review" profile while defaulting to Anthropic globally). Profiles are stored as JSON in `~/Library/Application Support/Sato/profiles.json` and persist across app restarts. Only one profile can be active at a time. Managed by `ContextManager.swift`.
 
+**Conversation History**: Each initial screenshot question creates a separate persisted thread. `ConversationStore` keeps JSON message metadata and separate JPEG screenshot files under `~/Library/Application Support/Sato/`, retaining the five most recent unpinned conversations plus all pinned conversations. The chat window can detach into a movable, resizable compact panel and dock to either display edge.
+
 **Multi-Provider Architecture**: All AI providers implement the `AIProvider` protocol (defined in `AIProviders/AIProvider.swift`). Each provider handles its own API format: Anthropic uses SSE with `system` parameter, OpenAI uses SSE with the Responses API `instructions` field, Ollama uses NDJSON with `role: "system"` messages. `ProviderManager` is the centralized singleton that tracks the selected provider, model, and credentials. Context profile overrides are resolved at call time via `ProviderManager.resolveProviderAndModel()`.
 
 ## Key Files
@@ -37,12 +39,13 @@ macOS menu bar companion app. Lives entirely in the macOS status bar (no dock ic
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1320 | Central state machine. Owns shortcut monitoring, screen capture, provider manager, overlay management, sprite animation manager, context manager, and chat sidebar state. Tracks conversation history (configurable 5-50, default 30), cursor visibility, and per-provider API key state. Coordinates hotkey → screenshot selection → text question → AI streaming → speech bubble pipeline via `ProviderManager.streamChat()`, plus chat sidebar follow-up conversations. Injects active context profile into system prompts and resolves profile-level provider/model overrides. |
+| `CompanionManager.swift` | ~1400 | Central state machine. Owns shortcut monitoring, screen capture, provider manager, overlay management, sprite animation manager, context manager, conversation store, and active chat state. Coordinates hotkey → screenshot selection → text question → AI streaming → speech bubble pipeline plus persisted follow-up threads. Injects active context profile into system prompts and resolves profile-level provider/model overrides. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
-| `CompanionPanelView.swift` | ~1680 | SwiftUI panel content for the menu bar dropdown. Shows companion status, multi-provider AI model picker (Anthropic/OpenAI/Ollama with per-provider model selection and API key fields), sprite picker, context profiles UI with provider/model override support, conversation history controls, "Always Open Chat" toggle, permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
+| `CompanionPanelView.swift` | ~1840 | SwiftUI panel content for the menu bar dropdown. Shows companion status, multi-provider AI model picker, sprite picker, context profiles, previous conversations with pin controls, "Always Open Chat" toggle, permissions, feedback, updates, and quit controls. |
 | `ContextManager.swift` | ~185 | Manages persistent Context Profiles for customizing Sato's behavior. Each profile can optionally override the global AI provider and model. Stores profiles as JSON in `~/Library/Application Support/Sato/profiles.json`. Provides CRUD operations, active profile switching, and starter profile creation on first launch. |
-| `OverlayWindow.swift` | ~930 | Full-screen transparent overlay hosting the sprite, speech bubbles, and chat sidebar. Contains OverlayWindowManager which manages per-screen overlays, interactive overlays for screenshot/text input, and the chat sidebar window with slide-in/out animation. Handles element-pointing, multi-monitor coordinate mapping, and assist flow phase transitions. |
-| `ChatSidebarView.swift` | ~270 | Slide-in chat sidebar for reading full responses and sending follow-up messages. Anchored to right screen edge with blur background. Shows conversation with screenshot thumbnail, user/assistant message bubbles with timestamps, and auto-focused text input for follow-ups. |
+| `ConversationStore.swift` | ~305 | Persists conversation metadata and screenshot files. Retains five recent unpinned threads plus all pinned threads, protects the active thread from pruning, and provides restore/pin/delete operations. |
+| `OverlayWindow.swift` | ~1460 | Full-screen transparent overlays plus the dedicated chat panel controller. Manages screenshot/text overlays, resizable left/right docking, floating chat movement, edge snapping, multi-monitor clamping, and assist flow phase transitions. |
+| `ChatSidebarView.swift` | ~470 | Responsive chat UI for docked and floating layouts. Compact mode previews the latest response while keeping the prompt visible; expanded mode shows the full thread with responsive Markdown and screenshot wrapping. |
 | `SpeechBubbleView.swift` | ~130 | Speech bubble displaying Claude's response above the sprite. Shows active context profile name as header. Detects content overflow and shows a "Show more" button that opens the chat sidebar. |
 | `SpriteDirection.swift` | ~100 | Eight compass directions for the sprite. Maps angles to directions and resolves which GIF asset to load (with horizontal mirroring for missing directions). |
 | `SpriteAnimationManager.swift` | ~430 | Manages the sprite state machine (resting/flying/assisting/pointing), GIF frame extraction via `CGImageSource`, 60fps animation timer for frame stepping and position interpolation, direction-based animation selection, and multi-sprite support (Max, Sky, Lexi, Rover, Paris). |
@@ -77,6 +80,8 @@ open leanring-buddy.xcodeproj
 ```
 
 **Do NOT run `xcodebuild` from the terminal** — it invalidates TCC (Transparency, Consent, and Control) permissions and the app will need to re-request screen recording, accessibility, etc.
+
+Release candidates are archived and Developer ID-exported through Xcode Organizer, then passed to `./scripts/release.sh <version> <path-to-Sato.app>` for app/DMG notarization, stapling, Sparkle signing, and staged appcast generation. The script never publishes automatically.
 
 ## Code Style & Conventions
 

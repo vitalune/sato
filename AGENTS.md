@@ -50,17 +50,20 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 
 **Context Profiles**: Users create named context profiles via the config panel that customize Sato's behavior. Each profile contains plain-English instructions injected into the Claude system prompt. Profiles are stored as JSON in `~/Library/Application Support/Sato/profiles.json` and persist across app restarts. Only one profile can be active at a time. Managed by `ContextManager.swift`.
 
+**Conversation History**: Each initial screenshot question creates a separate persisted thread. `ConversationStore` keeps JSON message metadata and separate JPEG screenshot files under `~/Library/Application Support/Sato/`, retaining the five most recent unpinned conversations plus all pinned conversations. The chat window can detach into a movable, resizable compact panel and dock to either display edge.
+
 ## Key Files
 
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1560 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, overlay management, sprite animation manager, context manager, and chat sidebar state. Tracks voice state, conversation history (configurable 5-50, default 30), model selection, and cursor visibility. Coordinates push-to-talk → screenshot → Claude → TTS → pointing pipeline, plus chat sidebar follow-up conversations. Injects active context profile into system prompts. |
+| `CompanionManager.swift` | ~1400 | Central state machine. Owns shortcut monitoring, screen capture, provider routing, overlay management, sprite animation, context profiles, conversation persistence, and active chat state. Coordinates screenshot questions, streaming responses, and persisted follow-up threads. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
-| `CompanionPanelView.swift` | ~1280 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, model picker (Sonnet/Opus), context profiles UI, conversation history controls, "Always Open Chat" toggle, permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
+| `CompanionPanelView.swift` | ~1840 | SwiftUI panel content for the menu bar dropdown, including provider/model settings, sprite and context profile controls, previous conversations with pin controls, permissions, feedback, updates, and quit controls. |
 | `ContextManager.swift` | ~180 | Manages persistent Context Profiles for customizing Sato's behavior. Stores profiles as JSON in `~/Library/Application Support/Sato/profiles.json`. Provides CRUD operations, active profile switching, and starter profile creation on first launch. |
-| `OverlayWindow.swift` | ~1000 | Full-screen transparent overlay hosting the Samoyed sprite, waveform, spinner, speech bubbles, and chat sidebar. Contains OverlayWindowManager which manages per-screen overlays, interactive overlays for screenshot/text input, and the chat sidebar window with slide-in/out animation. Handles element-pointing, multi-monitor coordinate mapping, and assist flow phase transitions. |
-| `ChatSidebarView.swift` | ~270 | Slide-in chat sidebar for reading full responses and sending follow-up messages. Anchored to right screen edge with blur background. Shows conversation with screenshot thumbnail, user/assistant message bubbles with timestamps, and auto-focused text input for follow-ups. |
+| `ConversationStore.swift` | ~305 | Persists conversation metadata and screenshot files. Retains five recent unpinned threads plus all pinned threads and protects the active thread from pruning. |
+| `OverlayWindow.swift` | ~1460 | Full-screen transparent overlays plus the dedicated chat panel controller. Manages resizable left/right docking, floating movement, edge snapping, multi-monitor clamping, and assist flow transitions. |
+| `ChatSidebarView.swift` | ~470 | Responsive docked/floating chat UI with compact latest-response mode, visible prompt input, full-thread expansion, and adaptive Markdown/screenshot wrapping. |
 | `SpeechBubbleView.swift` | ~130 | Speech bubble displaying Claude's response above the sprite. Shows active context profile name as header. Detects content overflow and shows a "Show more" button that opens the chat sidebar. |
 | `SpriteDirection.swift` | ~100 | Eight compass directions for the sprite. Maps angles to directions and resolves which GIF asset to load (with horizontal mirroring for missing directions). |
 | `SpriteAnimationManager.swift` | ~370 | Manages the Samoyed sprite state machine (resting/flying/assisting/pointing), GIF frame extraction via `CGImageSource`, 60fps animation timer for frame stepping and position interpolation, and direction-based animation selection. |
@@ -97,6 +100,8 @@ open leanring-buddy.xcodeproj
 ```
 
 **Do NOT run `xcodebuild` from the terminal** — it invalidates TCC (Transparency, Consent, and Control) permissions and the app will need to re-request screen recording, accessibility, etc.
+
+Release candidates are archived and Developer ID-exported through Xcode Organizer, then passed to `./scripts/release.sh <version> <path-to-Sato.app>` for app/DMG notarization, stapling, Sparkle signing, and staged appcast generation. The script never publishes automatically.
 
 ## Cloudflare Worker
 
