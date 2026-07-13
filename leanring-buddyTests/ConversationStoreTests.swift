@@ -167,12 +167,16 @@ struct ConversationStoreTests {
                 conversationID: protectedConversationID
             ) != nil
         )
+        #expect(
+            conversationStore.conversations.filter { !$0.isPinned }.count
+                == ConversationStore.recentUnpinnedConversationLimit
+        )
 
         conversationStore.setProtectedConversation(conversationID: nil)
         #expect(
             conversationStore.conversation(
                 conversationID: protectedConversationID
-            ) == nil
+            ) != nil
         )
     }
 
@@ -211,6 +215,19 @@ struct ConversationStoreTests {
         )
         #expect(clampedFrame.maxX == visibleScreenFrame.maxX)
         #expect(clampedFrame.maxY == visibleScreenFrame.maxY)
+
+        let translatedFrame = ChatWindowGeometry.translatedFloatingFrame(
+            floatingFrame: CGRect(x: 720, y: 300, width: 400, height: 300),
+            sourceVisibleScreenFrame: visibleScreenFrame,
+            targetVisibleScreenFrame: CGRect(
+                x: 1440,
+                y: 24,
+                width: 1920,
+                height: 1056
+            )
+        )
+        #expect(translatedFrame.minX >= 1440)
+        #expect(translatedFrame.maxX <= 3360)
     }
 
     private func temporaryStorageDirectoryURL() -> URL {

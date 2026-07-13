@@ -805,6 +805,58 @@ enum ChatWindowGeometry {
             height: clampedHeight
         )
     }
+
+    static func translatedFloatingFrame(
+        floatingFrame: CGRect,
+        sourceVisibleScreenFrame: CGRect,
+        targetVisibleScreenFrame: CGRect
+    ) -> CGRect {
+        let sourceHorizontalTravel = max(
+            1,
+            sourceVisibleScreenFrame.width - floatingFrame.width
+        )
+        let sourceVerticalTravel = max(
+            1,
+            sourceVisibleScreenFrame.height - floatingFrame.height
+        )
+        let horizontalProgress = min(
+            max(
+                (floatingFrame.minX - sourceVisibleScreenFrame.minX)
+                    / sourceHorizontalTravel,
+                0
+            ),
+            1
+        )
+        let verticalProgress = min(
+            max(
+                (floatingFrame.minY - sourceVisibleScreenFrame.minY)
+                    / sourceVerticalTravel,
+                0
+            ),
+            1
+        )
+        let targetHorizontalTravel = max(
+            0,
+            targetVisibleScreenFrame.width - floatingFrame.width
+        )
+        let targetVerticalTravel = max(
+            0,
+            targetVisibleScreenFrame.height - floatingFrame.height
+        )
+        let translatedFrame = CGRect(
+            x: targetVisibleScreenFrame.minX
+                + (targetHorizontalTravel * horizontalProgress),
+            y: targetVisibleScreenFrame.minY
+                + (targetVerticalTravel * verticalProgress),
+            width: floatingFrame.width,
+            height: floatingFrame.height
+        )
+
+        return clampedFloatingFrame(
+            floatingFrame: translatedFrame,
+            visibleScreenFrame: targetVisibleScreenFrame
+        )
+    }
 }
 
 private final class ChatPanelWindow: NSPanel {
@@ -1190,16 +1242,30 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
     }
 
     func retargetChatSidebar(to screen: NSScreen) {
-        guard chatSidebarWindow != nil else { return }
-
-        let dockSide: ChatWindowDockSide
-        if let presentationMode = chatWindowViewState?.presentationMode,
-           case .docked(let currentDockSide) = presentationMode {
-            dockSide = currentDockSide
-        } else {
-            dockSide = preferredChatDockSide
+        guard let window = chatSidebarWindow,
+              let presentationMode = chatWindowViewState?.presentationMode
+        else {
+            return
         }
-        dockChatSidebar(to: dockSide, on: screen, animated: true)
+
+        switch presentationMode {
+        case .docked(let dockSide):
+            dockChatSidebar(to: dockSide, on: screen, animated: true)
+        case .floating:
+            guard window.screen !== screen else { return }
+
+            let sourceVisibleScreenFrame = window.screen?.visibleFrame ?? window.frame
+            let targetFrame = ChatWindowGeometry.translatedFloatingFrame(
+                floatingFrame: window.frame,
+                sourceVisibleScreenFrame: sourceVisibleScreenFrame,
+                targetVisibleScreenFrame: screen.visibleFrame
+            )
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.2
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                window.animator().setFrame(targetFrame, display: true)
+            }
+        }
     }
 
     private func detachChatSidebar() {

@@ -173,6 +173,10 @@ final class ConversationStore: ObservableObject {
     /// thread is unpinned while the user is still replying to it.
     func setProtectedConversation(conversationID: UUID?) {
         protectedConversationID = conversationID
+        if let conversationID,
+           let conversationIndex = conversations.firstIndex(where: { $0.id == conversationID }) {
+            conversations[conversationIndex].updatedAt = Date()
+        }
         pruneExcessUnpinnedConversations()
         saveConversations()
     }
@@ -220,7 +224,9 @@ final class ConversationStore: ObservableObject {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             conversations = try decoder.decode([SavedConversation].self, from: data)
-            pruneExcessUnpinnedConversations()
+            if pruneExcessUnpinnedConversations() {
+                saveConversations()
+            }
         } catch {
             // Keep the unreadable file intact so a future recovery can inspect it.
             conversations = []
@@ -267,25 +273,31 @@ final class ConversationStore: ObservableObject {
         )
     }
 
-    private func pruneExcessUnpinnedConversations() {
+    @discardableResult
+    private func pruneExcessUnpinnedConversations() -> Bool {
         let unpinnedConversationsByRecency = conversations
             .filter { !$0.isPinned }
-            .sorted { $0.updatedAt > $1.updatedAt }
-        var conversationIDsToKeep = Set(
+            .sorted { firstConversation, secondConversation in
+                if firstConversation.id == protectedConversationID {
+                    return true
+                }
+                if secondConversation.id == protectedConversationID {
+                    return false
+                }
+                return firstConversation.updatedAt > secondConversation.updatedAt
+            }
+        let conversationIDsToKeep = Set(
             unpinnedConversationsByRecency
                 .prefix(Self.recentUnpinnedConversationLimit)
                 .map(\.id)
         )
-        if let protectedConversationID {
-            conversationIDsToKeep.insert(protectedConversationID)
-        }
         let conversationIDsToRemove = Set(
             unpinnedConversationsByRecency
                 .filter { !conversationIDsToKeep.contains($0.id) }
                 .map(\.id)
         )
 
-        guard !conversationIDsToRemove.isEmpty else { return }
+        guard !conversationIDsToRemove.isEmpty else { return false }
 
         let removedConversations = conversations.filter {
             conversationIDsToRemove.contains($0.id)
@@ -294,6 +306,7 @@ final class ConversationStore: ObservableObject {
             conversationIDsToRemove.contains($0.id)
         }
         removedConversations.forEach(deleteScreenshot)
+        return true
     }
 
     private func deleteScreenshot(for conversation: SavedConversation) {
