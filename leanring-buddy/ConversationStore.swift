@@ -72,13 +72,15 @@ final class ConversationStore: ObservableObject {
     private var protectedConversationID: UUID?
 
     init(
-        storageDirectoryURL: URL = ConversationStore.defaultStorageDirectoryURL,
+        storageDirectoryURL: URL? = nil,
         fileManager: FileManager = .default
     ) {
+        let resolvedStorageDirectoryURL = storageDirectoryURL
+            ?? ConversationStore.defaultStorageDirectoryURL
         self.fileManager = fileManager
-        self.storageDirectoryURL = storageDirectoryURL
-        conversationsFileURL = storageDirectoryURL.appendingPathComponent("conversations.json")
-        screenshotsDirectoryURL = storageDirectoryURL.appendingPathComponent(
+        self.storageDirectoryURL = resolvedStorageDirectoryURL
+        conversationsFileURL = resolvedStorageDirectoryURL.appendingPathComponent("conversations.json")
+        screenshotsDirectoryURL = resolvedStorageDirectoryURL.appendingPathComponent(
             "conversation-screenshots",
             isDirectory: true
         )
