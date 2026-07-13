@@ -14,6 +14,7 @@ VERSION="${1:-}"
 EXPORTED_APP_PATH="${2:-}"
 NOTARY_PROFILE="${SATO_NOTARY_PROFILE:-sato-notarization}"
 DEVELOPER_IDENTITY="${SATO_DEVELOPER_IDENTITY:-Developer ID Application: Amir Valizadeh (UP52GQK38V)}"
+DEVELOPER_IDENTITY_HASH="${SATO_DEVELOPER_IDENTITY_HASH:-}"
 GITHUB_REPOSITORY="vitalune/sato"
 DMG_BACKGROUND="${PROJECT_DIR}/assets/dmg/background.png"
 
@@ -51,10 +52,31 @@ for requiredCommand in create-dmg codesign ditto security spctl stat xcrun; do
 done
 
 availableSigningIdentities="$(security find-identity -v -p codesigning)"
-if [[ "$availableSigningIdentities" != *"$DEVELOPER_IDENTITY"* ]]; then
-    echo "Developer ID signing identity not found: $DEVELOPER_IDENTITY"
-    echo "Set SATO_DEVELOPER_IDENTITY if the certificate name differs."
-    exit 1
+if [ -n "$DEVELOPER_IDENTITY_HASH" ]; then
+    if [[ "$availableSigningIdentities" != *"$DEVELOPER_IDENTITY_HASH"* ]]; then
+        echo "Developer ID signing identity hash not found: $DEVELOPER_IDENTITY_HASH"
+        exit 1
+    fi
+else
+    matchingIdentityHashes=()
+    while IFS= read -r signingIdentityLine; do
+        if [[ "$signingIdentityLine" == *"\"${DEVELOPER_IDENTITY}\""* ]]; then
+            signingIdentityRemainder="${signingIdentityLine#*) }"
+            matchingIdentityHashes+=("${signingIdentityRemainder%% *}")
+        fi
+    done <<< "$availableSigningIdentities"
+
+    if [ "${#matchingIdentityHashes[@]}" -eq 0 ]; then
+        echo "Developer ID signing identity not found: $DEVELOPER_IDENTITY"
+        echo "Set SATO_DEVELOPER_IDENTITY if the certificate name differs."
+        exit 1
+    fi
+
+    DEVELOPER_IDENTITY_HASH="${matchingIdentityHashes[0]}"
+    if [ "${#matchingIdentityHashes[@]}" -gt 1 ]; then
+        echo "Multiple certificates share the Developer ID name."
+        echo "Using certificate hash: $DEVELOPER_IDENTITY_HASH"
+    fi
 fi
 
 if [ ! -f "$DMG_BACKGROUND" ]; then
@@ -174,7 +196,7 @@ fi
 
 echo "Signing the DMG with Developer ID..."
 codesign --force \
-    --sign "$DEVELOPER_IDENTITY" \
+    --sign "$DEVELOPER_IDENTITY_HASH" \
     --timestamp \
     "$DMG_PATH"
 codesign --verify --verbose=2 "$DMG_PATH"

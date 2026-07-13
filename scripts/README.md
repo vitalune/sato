@@ -41,6 +41,7 @@ brew install create-dmg
 # To use a different notary profile or Sparkle tool location:
 SATO_NOTARY_PROFILE=my-profile \
 SATO_DEVELOPER_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+SATO_DEVELOPER_IDENTITY_HASH=OPTIONAL_CERTIFICATE_SHA1 \
 SPARKLE_BIN=/path/to/Sparkle/bin \
 ./scripts/release.sh 1.2.0 ~/Desktop/Sato.app
 ```
@@ -77,6 +78,10 @@ xcrun notarytool store-credentials "sato-notarization" \
 
 - Sparkle's `sign_update` and `generate_appcast` tools, normally downloaded by
   Swift Package Manager after an Xcode build
+
+If the Keychain contains duplicate certificates with the same Developer ID
+name, the script selects a specific valid certificate by SHA-1 hash. Set
+`SATO_DEVELOPER_IDENTITY_HASH` only when you need to override that selection.
 
 ## Publication checklist
 
