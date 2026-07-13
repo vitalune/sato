@@ -198,15 +198,21 @@ struct ConversationStoreTests {
         #expect(leftDockedFrame.minX == visibleScreenFrame.minX)
         #expect(
             ChatWindowGeometry.dockingSide(
-                floatingFrame: CGRect(x: 10, y: 200, width: 380, height: 300),
+                dropLocation: CGPoint(x: 10, y: 300),
                 visibleScreenFrame: visibleScreenFrame
             ) == .left
         )
         #expect(
             ChatWindowGeometry.dockingSide(
-                floatingFrame: CGRect(x: 1050, y: 200, width: 380, height: 300),
+                dropLocation: CGPoint(x: 1430, y: 300),
                 visibleScreenFrame: visibleScreenFrame
             ) == .right
+        )
+        #expect(
+            ChatWindowGeometry.dockingSide(
+                dropLocation: CGPoint(x: 720, y: 300),
+                visibleScreenFrame: visibleScreenFrame
+            ) == nil
         )
 
         let clampedFrame = ChatWindowGeometry.clampedFloatingFrame(
