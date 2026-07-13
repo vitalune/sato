@@ -6,7 +6,8 @@ anything.
 
 ## 1. Set the version
 
-For v1.2.0, set these values in `leanring-buddy/Info.plist` before archiving:
+For v1.2.0, these values must match in both the app target's Xcode build
+settings and `leanring-buddy/Info.plist` before archiving:
 
 ```xml
 <key>CFBundleShortVersionString</key>
@@ -16,6 +17,7 @@ For v1.2.0, set these values in `leanring-buddy/Info.plist` before archiving:
 ```
 
 The build number is derived as `major + two-digit minor + two-digit patch`.
+The repository is already configured for v1.2.0 (10200).
 
 ## 2. Archive and export in Xcode
 
