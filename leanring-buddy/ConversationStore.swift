@@ -69,6 +69,7 @@ final class ConversationStore: ObservableObject {
     private let storageDirectoryURL: URL
     private let conversationsFileURL: URL
     private let screenshotsDirectoryURL: URL
+    private var protectedConversationID: UUID?
 
     init(
         storageDirectoryURL: URL = ConversationStore.defaultStorageDirectoryURL,
@@ -99,11 +100,9 @@ final class ConversationStore: ObservableObject {
     @discardableResult
     func createConversation(
         userMessage: ChatSidebarMessage,
-        assistantMessage: ChatSidebarMessage,
         screenshotData: Data?
     ) -> UUID {
         let conversationID = UUID()
-        let now = max(userMessage.timestamp, assistantMessage.timestamp)
         let screenshotFileName = saveScreenshot(
             screenshotData,
             conversationID: conversationID
@@ -112,13 +111,12 @@ final class ConversationStore: ObservableObject {
             id: conversationID,
             title: Self.conversationTitle(from: userMessage.text),
             messages: [
-                SavedConversationMessage(chatSidebarMessage: userMessage),
-                SavedConversationMessage(chatSidebarMessage: assistantMessage)
+                SavedConversationMessage(chatSidebarMessage: userMessage)
             ],
             screenshotFileName: screenshotFileName,
             isPinned: false,
             createdAt: userMessage.timestamp,
-            updatedAt: now
+            updatedAt: userMessage.timestamp
         )
 
         conversations.append(conversation)
@@ -127,24 +125,20 @@ final class ConversationStore: ObservableObject {
         return conversationID
     }
 
-    func appendExchange(
+    func appendMessage(
         conversationID: UUID,
-        userMessage: ChatSidebarMessage,
-        assistantMessage: ChatSidebarMessage
+        message: ChatSidebarMessage
     ) {
         guard let conversationIndex = conversations.firstIndex(where: { $0.id == conversationID }) else {
             return
         }
 
         conversations[conversationIndex].messages.append(
-            SavedConversationMessage(chatSidebarMessage: userMessage)
-        )
-        conversations[conversationIndex].messages.append(
-            SavedConversationMessage(chatSidebarMessage: assistantMessage)
+            SavedConversationMessage(chatSidebarMessage: message)
         )
         conversations[conversationIndex].updatedAt = max(
-            userMessage.timestamp,
-            assistantMessage.timestamp
+            conversations[conversationIndex].updatedAt,
+            message.timestamp
         )
         pruneExcessUnpinnedConversations()
         saveConversations()
@@ -171,6 +165,14 @@ final class ConversationStore: ObservableObject {
         }
 
         conversations[conversationIndex].isPinned = isPinned
+        pruneExcessUnpinnedConversations()
+        saveConversations()
+    }
+
+    /// Prevents the open conversation from being removed if an old pinned
+    /// thread is unpinned while the user is still replying to it.
+    func setProtectedConversation(conversationID: UUID?) {
+        protectedConversationID = conversationID
         pruneExcessUnpinnedConversations()
         saveConversations()
     }
@@ -269,9 +271,17 @@ final class ConversationStore: ObservableObject {
         let unpinnedConversationsByRecency = conversations
             .filter { !$0.isPinned }
             .sorted { $0.updatedAt > $1.updatedAt }
+        var conversationIDsToKeep = Set(
+            unpinnedConversationsByRecency
+                .prefix(Self.recentUnpinnedConversationLimit)
+                .map(\.id)
+        )
+        if let protectedConversationID {
+            conversationIDsToKeep.insert(protectedConversationID)
+        }
         let conversationIDsToRemove = Set(
             unpinnedConversationsByRecency
-                .dropFirst(Self.recentUnpinnedConversationLimit)
+                .filter { !conversationIDsToKeep.contains($0.id) }
                 .map(\.id)
         )
 

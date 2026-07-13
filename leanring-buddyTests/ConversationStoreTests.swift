@@ -2,9 +2,9 @@ import Foundation
 import Testing
 @testable import leanring_buddy
 
+@MainActor
 struct ConversationStoreTests {
     @Test
-    @MainActor
     func retainsOnlyFiveRecentUnpinnedConversations() throws {
         let storageDirectoryURL = temporaryStorageDirectoryURL()
         defer { try? FileManager.default.removeItem(at: storageDirectoryURL) }
@@ -20,11 +20,14 @@ struct ConversationStoreTests {
                     text: "Question \(conversationIndex)",
                     timestamp: messageDate
                 ),
-                assistantMessage: assistantMessage(
+                screenshotData: nil
+            )
+            conversationStore.appendMessage(
+                conversationID: conversationID,
+                message: assistantMessage(
                     text: "Answer \(conversationIndex)",
                     timestamp: messageDate
-                ),
-                screenshotData: nil
+                )
             )
             createdConversationIDs.append(conversationID)
         }
@@ -43,7 +46,6 @@ struct ConversationStoreTests {
     }
 
     @Test
-    @MainActor
     func pinnedConversationSurvivesRecentConversationPruning() throws {
         let storageDirectoryURL = temporaryStorageDirectoryURL()
         defer { try? FileManager.default.removeItem(at: storageDirectoryURL) }
@@ -52,8 +54,11 @@ struct ConversationStoreTests {
         )
         let pinnedConversationID = conversationStore.createConversation(
             userMessage: userMessage(text: "Keep me", timestamp: .distantPast),
-            assistantMessage: assistantMessage(text: "Pinned", timestamp: .distantPast),
             screenshotData: Data([1, 2, 3])
+        )
+        conversationStore.appendMessage(
+            conversationID: pinnedConversationID,
+            message: assistantMessage(text: "Pinned", timestamp: .distantPast)
         )
         conversationStore.setConversationPinned(
             conversationID: pinnedConversationID,
@@ -62,16 +67,19 @@ struct ConversationStoreTests {
 
         for conversationIndex in 0..<6 {
             let messageDate = Date(timeIntervalSince1970: Double(conversationIndex + 1))
-            conversationStore.createConversation(
+            let conversationID = conversationStore.createConversation(
                 userMessage: userMessage(
                     text: "Recent \(conversationIndex)",
                     timestamp: messageDate
                 ),
-                assistantMessage: assistantMessage(
+                screenshotData: nil
+            )
+            conversationStore.appendMessage(
+                conversationID: conversationID,
+                message: assistantMessage(
                     text: "Answer \(conversationIndex)",
                     timestamp: messageDate
-                ),
-                screenshotData: nil
+                )
             )
         }
 
@@ -85,7 +93,6 @@ struct ConversationStoreTests {
     }
 
     @Test
-    @MainActor
     func conversationsAndScreenshotsPersistAcrossStoreInstances() throws {
         let storageDirectoryURL = temporaryStorageDirectoryURL()
         defer { try? FileManager.default.removeItem(at: storageDirectoryURL) }
@@ -94,8 +101,11 @@ struct ConversationStoreTests {
         )
         let conversationID = firstConversationStore.createConversation(
             userMessage: userMessage(text: "Persist this", timestamp: .now),
-            assistantMessage: assistantMessage(text: "Saved", timestamp: .now),
             screenshotData: Data([4, 5, 6])
+        )
+        firstConversationStore.appendMessage(
+            conversationID: conversationID,
+            message: assistantMessage(text: "Saved", timestamp: .now)
         )
         firstConversationStore.setConversationPinned(
             conversationID: conversationID,
@@ -115,6 +125,54 @@ struct ConversationStoreTests {
             reloadedConversationStore.screenshotData(
                 conversationID: conversationID
             ) == Data([4, 5, 6])
+        )
+    }
+
+    @Test
+    func activeConversationIsProtectedWhenAnOldPinIsRemoved() throws {
+        let storageDirectoryURL = temporaryStorageDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: storageDirectoryURL) }
+        let conversationStore = ConversationStore(
+            storageDirectoryURL: storageDirectoryURL
+        )
+        let protectedConversationID = conversationStore.createConversation(
+            userMessage: userMessage(text: "Old pinned thread", timestamp: .distantPast),
+            screenshotData: nil
+        )
+        conversationStore.setConversationPinned(
+            conversationID: protectedConversationID,
+            isPinned: true
+        )
+
+        for conversationIndex in 0..<6 {
+            let messageDate = Date(timeIntervalSince1970: Double(conversationIndex + 1))
+            conversationStore.createConversation(
+                userMessage: userMessage(
+                    text: "New thread \(conversationIndex)",
+                    timestamp: messageDate
+                ),
+                screenshotData: nil
+            )
+        }
+
+        conversationStore.setProtectedConversation(
+            conversationID: protectedConversationID
+        )
+        conversationStore.setConversationPinned(
+            conversationID: protectedConversationID,
+            isPinned: false
+        )
+        #expect(
+            conversationStore.conversation(
+                conversationID: protectedConversationID
+            ) != nil
+        )
+
+        conversationStore.setProtectedConversation(conversationID: nil)
+        #expect(
+            conversationStore.conversation(
+                conversationID: protectedConversationID
+            ) == nil
         )
     }
 

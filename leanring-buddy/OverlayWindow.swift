@@ -1104,6 +1104,9 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
             onMinimize: { [weak self] in
                 self?.detachChatSidebar()
             },
+            onWindowDragEnded: { [weak self] in
+                self?.finishChatWindowMove()
+            },
             onClose: { [weak companionManager] in
                 companionManager?.closeChatSidebar()
             }
@@ -1184,6 +1187,19 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
     private var preferredChatDockSide: ChatWindowDockSide {
         let savedDockSide = UserDefaults.standard.string(forKey: "chatWindowDockSide")
         return ChatWindowDockSide(rawValue: savedDockSide ?? "") ?? .right
+    }
+
+    func retargetChatSidebar(to screen: NSScreen) {
+        guard chatSidebarWindow != nil else { return }
+
+        let dockSide: ChatWindowDockSide
+        if let presentationMode = chatWindowViewState?.presentationMode,
+           case .docked(let currentDockSide) = presentationMode {
+            dockSide = currentDockSide
+        } else {
+            dockSide = preferredChatDockSide
+        }
+        dockChatSidebar(to: dockSide, on: screen, animated: true)
     }
 
     private func detachChatSidebar() {
@@ -1327,9 +1343,8 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
         }
     }
 
-    func windowDidEndLiveMove(_ notification: Notification) {
-        guard let window = notification.object as? NSWindow,
-              window === chatSidebarWindow,
+    private func finishChatWindowMove() {
+        guard let window = chatSidebarWindow,
               chatWindowViewState?.presentationMode == .floating,
               let screen = window.screen
         else {

@@ -36,6 +36,7 @@ struct ChatSidebarView: View {
     @ObservedObject var companionManager: CompanionManager
     @ObservedObject var windowViewState: ChatWindowViewState
     let onMinimize: () -> Void
+    let onWindowDragEnded: () -> Void
     let onClose: () -> Void
 
     @State private var followUpInputText: String = ""
@@ -116,7 +117,7 @@ struct ChatSidebarView: View {
             }
 
             if windowViewState.presentationMode.isFloating {
-                WindowDragHandle()
+                WindowDragHandle(onDragEnded: onWindowDragEnded)
                     .frame(maxWidth: .infinity)
                     .frame(height: 28)
                     .accessibilityLabel("Move chat window")
@@ -390,14 +391,30 @@ struct ChatSidebarView: View {
 // MARK: - Window Drag Handle
 
 private struct WindowDragHandle: NSViewRepresentable {
+    let onDragEnded: () -> Void
+
     func makeNSView(context: Context) -> DraggableWindowRegionView {
-        DraggableWindowRegionView()
+        DraggableWindowRegionView(onDragEnded: onDragEnded)
     }
 
-    func updateNSView(_ nsView: DraggableWindowRegionView, context: Context) {}
+    func updateNSView(_ nsView: DraggableWindowRegionView, context: Context) {
+        nsView.onDragEnded = onDragEnded
+    }
 }
 
 private final class DraggableWindowRegionView: NSView {
+    var onDragEnded: () -> Void
+
+    init(onDragEnded: @escaping () -> Void) {
+        self.onDragEnded = onDragEnded
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
 
@@ -425,6 +442,7 @@ private final class DraggableWindowRegionView: NSView {
         NSCursor.closedHand.push()
         window?.performDrag(with: event)
         NSCursor.pop()
+        onDragEnded()
     }
 }
 

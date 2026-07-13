@@ -141,6 +141,7 @@ final class CompanionManager: ObservableObject {
             return message.chatSidebarMessage(imageData: messageImageData)
         }
         activeConversationID = conversationID
+        conversationStore.setProtectedConversation(conversationID: conversationID)
         assistCroppedImageData = screenshotData
         assistResponseText = ""
         assistResponseIsStreaming = false
@@ -152,6 +153,7 @@ final class CompanionManager: ObservableObject {
         } ?? NSScreen.main
         guard let pointerScreen else { return }
         assistScreenFrame = pointerScreen.frame
+        overlayWindowManager.retargetChatSidebar(to: pointerScreen)
 
         if !isOverlayVisible {
             overlayWindowManager.hasShownOverlayBefore = true
@@ -189,6 +191,10 @@ final class CompanionManager: ObservableObject {
             timestamp: Date()
         )
         chatSidebarMessages.append(userMessage)
+        conversationStore.appendMessage(
+            conversationID: activeConversationID,
+            message: userMessage
+        )
 
         // Add placeholder assistant message that will be streamed into
         let assistantMessageIndex = chatSidebarMessages.count
@@ -242,10 +248,9 @@ final class CompanionManager: ObservableObject {
 
                 if assistantMessageIndex < chatSidebarMessages.count {
                     let assistantMessage = chatSidebarMessages[assistantMessageIndex]
-                    conversationStore.appendExchange(
+                    conversationStore.appendMessage(
                         conversationID: activeConversationID,
-                        userMessage: userMessage,
-                        assistantMessage: assistantMessage
+                        message: assistantMessage
                     )
                 }
 
@@ -259,6 +264,10 @@ final class CompanionManager: ObservableObject {
                 print("⚠️ Chat sidebar error: \(error)")
                 if assistantMessageIndex < chatSidebarMessages.count {
                     chatSidebarMessages[assistantMessageIndex].text = "Error: \(error.localizedDescription)"
+                    conversationStore.appendMessage(
+                        conversationID: activeConversationID,
+                        message: chatSidebarMessages[assistantMessageIndex]
+                    )
                 }
                 chatSidebarIsStreaming = false
                 if !self.isStealthModeEnabled {
@@ -274,6 +283,7 @@ final class CompanionManager: ObservableObject {
         chatSidebarMessages = []
         chatSidebarIsStreaming = false
         activeConversationID = nil
+        conversationStore.setProtectedConversation(conversationID: nil)
         assistResponseText = ""
         assistResponseIsStreaming = false
         // Keep assistCroppedImageData so conversation history retains screenshot context
@@ -817,8 +827,19 @@ final class CompanionManager: ObservableObject {
             return
         }
 
-        activeConversationID = nil
-        chatSidebarMessages = []
+        let userMessage = ChatSidebarMessage(
+            role: .user,
+            text: questionText,
+            imageData: imageData,
+            timestamp: Date()
+        )
+        chatSidebarMessages = [userMessage]
+        let conversationID = conversationStore.createConversation(
+            userMessage: userMessage,
+            screenshotData: imageData
+        )
+        activeConversationID = conversationID
+        conversationStore.setProtectedConversation(conversationID: conversationID)
         assistFlowPhase = .showingResponse
         assistResponseText = ""
         assistResponseIsStreaming = true
@@ -856,23 +877,16 @@ final class CompanionManager: ObservableObject {
                 assistResponseText = responseText
                 assistResponseIsStreaming = false
 
-                let userMessage = ChatSidebarMessage(
-                    role: .user,
-                    text: questionText,
-                    imageData: imageData,
-                    timestamp: Date()
-                )
                 let assistantMessage = ChatSidebarMessage(
                     role: .assistant,
                     text: responseText,
                     imageData: nil,
                     timestamp: Date()
                 )
-                chatSidebarMessages = [userMessage, assistantMessage]
-                activeConversationID = conversationStore.createConversation(
-                    userMessage: userMessage,
-                    assistantMessage: assistantMessage,
-                    screenshotData: imageData
+                chatSidebarMessages.append(assistantMessage)
+                conversationStore.appendMessage(
+                    conversationID: conversationID,
+                    message: assistantMessage
                 )
 
                 print("🧠 Assist: response complete (\(responseText.count) chars)")
@@ -894,8 +908,20 @@ final class CompanionManager: ObservableObject {
                 }
             } catch {
                 print("⚠️ Assist error: \(error)")
-                assistResponseText = "Error: \(error.localizedDescription)"
+                let errorMessageText = "Error: \(error.localizedDescription)"
+                assistResponseText = errorMessageText
                 assistResponseIsStreaming = false
+                let errorMessage = ChatSidebarMessage(
+                    role: .assistant,
+                    text: errorMessageText,
+                    imageData: nil,
+                    timestamp: Date()
+                )
+                chatSidebarMessages.append(errorMessage)
+                conversationStore.appendMessage(
+                    conversationID: conversationID,
+                    message: errorMessage
+                )
                 if !self.isStealthModeEnabled {
                     self.spriteAnimationManager.stopMessageDeliveredLoop()
                 }
@@ -914,6 +940,7 @@ final class CompanionManager: ObservableObject {
         chatSidebarMessages = []
         chatSidebarIsStreaming = false
         activeConversationID = nil
+        conversationStore.setProtectedConversation(conversationID: nil)
 
         if isStealthModeEnabled {
             return
@@ -941,6 +968,7 @@ final class CompanionManager: ObservableObject {
         chatSidebarMessages = []
         chatSidebarIsStreaming = false
         activeConversationID = nil
+        conversationStore.setProtectedConversation(conversationID: nil)
 
         if isStealthModeEnabled {
             return
