@@ -16,6 +16,7 @@ import SwiftUI
 
 extension Notification.Name {
     static let clickyDismissPanel = Notification.Name("clickyDismissPanel")
+    static let clickyPanelContentSizeChanged = Notification.Name("clickyPanelContentSizeChanged")
     static let assistOverlayEnterPressed = Notification.Name("assistOverlayEnterPressed")
     static let assistOverlayCancelPressed = Notification.Name("assistOverlayCancelPressed")
 }
@@ -33,6 +34,7 @@ final class MenuBarPanelManager: NSObject {
     private var clickOutsideMonitor: Any?
     private var escapeKeyMonitor: Any?
     private var dismissPanelObserver: NSObjectProtocol?
+    private var panelContentSizeObserver: NSObjectProtocol?
 
     private let companionManager: CompanionManager
     private let updaterController: UpdaterController
@@ -56,6 +58,14 @@ final class MenuBarPanelManager: NSObject {
         ) { [weak self] _ in
             self?.hidePanel()
         }
+
+        panelContentSizeObserver = NotificationCenter.default.addObserver(
+            forName: .clickyPanelContentSizeChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.positionPanelBelowStatusItem()
+        }
     }
 
     deinit {
@@ -66,6 +76,9 @@ final class MenuBarPanelManager: NSObject {
             NSEvent.removeMonitor(monitor)
         }
         if let observer = dismissPanelObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = panelContentSizeObserver {
             NotificationCenter.default.removeObserver(observer)
         }
     }

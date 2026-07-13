@@ -1515,45 +1515,18 @@ struct CompanionPanelView: View {
     // MARK: - Conversation History
 
     private var conversationSection: some View {
-        VStack(spacing: 6) {
-            HStack {
-                Text("History")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(DS.Colors.textSecondary)
-
-                Spacer()
-
-                Stepper(
-                    value: Binding(
-                        get: { companionManager.conversationHistoryLimit },
-                        set: { companionManager.setConversationHistoryLimit($0) }
-                    ),
-                    in: 5...50,
-                    step: 5
-                ) {
-                    Text("\(companionManager.conversationHistoryLimit) msgs")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(DS.Colors.textTertiary)
-                }
-                .scaleEffect(0.8)
-                .frame(width: 140)
+        PreviousConversationsSection(
+            conversationStore: companionManager.conversationStore,
+            onOpenConversation: { conversationID in
+                companionManager.openSavedConversation(conversationID: conversationID)
+            },
+            onSetConversationPinned: { conversationID, isPinned in
+                companionManager.setConversationPinned(
+                    conversationID: conversationID,
+                    isPinned: isPinned
+                )
             }
-
-            Button(action: {
-                companionManager.clearConversationHistory()
-            }) {
-                HStack(spacing: 6) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 11, weight: .medium))
-                    Text("Clear Conversation")
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .foregroundColor(DS.Colors.textTertiary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.plain)
-            .pointerCursor()
-        }
+        )
     }
 
     // MARK: - Hotkey Labels
@@ -1717,4 +1690,151 @@ struct CompanionPanelView: View {
         return "Active"
     }
 
+}
+
+private struct PreviousConversationsSection: View {
+    @ObservedObject var conversationStore: ConversationStore
+    let onOpenConversation: (UUID) -> Void
+    let onSetConversationPinned: (UUID, Bool) -> Void
+
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Button {
+                isExpanded.toggle()
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(
+                        name: .clickyPanelContentSizeChanged,
+                        object: nil
+                    )
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .frame(width: 16)
+
+                    Text("Previous Conversations")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+
+                    Spacer()
+
+                    if !conversationStore.conversationsForMenu.isEmpty {
+                        Text("\(conversationStore.conversationsForMenu.count)")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(DS.Colors.textTertiary)
+                    }
+
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+
+            if isExpanded {
+                if conversationStore.conversationsForMenu.isEmpty {
+                    Text("Your recent conversations will appear here.")
+                        .font(.system(size: 11))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 6)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 4) {
+                            ForEach(conversationStore.conversationsForMenu) { conversation in
+                                PreviousConversationRow(
+                                    conversation: conversation,
+                                    onOpenConversation: {
+                                        onOpenConversation(conversation.id)
+                                    },
+                                    onSetPinned: { isPinned in
+                                        onSetConversationPinned(
+                                            conversation.id,
+                                            isPinned
+                                        )
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    .frame(
+                        height: min(
+                            CGFloat(conversationStore.conversationsForMenu.count) * 58,
+                            196
+                        )
+                    )
+                }
+            }
+        }
+    }
+}
+
+private struct PreviousConversationRow: View {
+    let conversation: SavedConversation
+    let onOpenConversation: () -> Void
+    let onSetPinned: (Bool) -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button(action: onOpenConversation) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 5) {
+                        Text(conversation.title)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(DS.Colors.textSecondary)
+                            .lineLimit(1)
+
+                        Text(conversation.updatedAt, style: .relative)
+                            .font(.system(size: 9))
+                            .foregroundColor(DS.Colors.textTertiary)
+                            .lineLimit(1)
+                    }
+
+                    Text(conversation.latestAssistantResponse ?? "No response saved")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+
+            Button {
+                onSetPinned(!conversation.isPinned)
+            } label: {
+                Image(systemName: conversation.isPinned ? "pin.fill" : "pin")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(
+                        conversation.isPinned
+                            ? DS.Colors.accentText
+                            : DS.Colors.textTertiary
+                    )
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .help(conversation.isPinned ? "Unpin conversation" : "Pin conversation")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: DS.CornerRadius.small, style: .continuous)
+                .fill(isHovered ? DS.Colors.surface3 : DS.Colors.surface2.opacity(0.65))
+        )
+        .onHover { isHovered = $0 }
+    }
 }

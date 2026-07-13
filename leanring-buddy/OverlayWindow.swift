@@ -549,8 +549,19 @@ struct BlueCursorView: View {
     /// Screenshot selection and text input use an InteractiveOverlayWindow because
     /// they need mouse/keyboard input, which the regular click-through overlay can't provide.
     private func handleAssistFlowPhaseChange(_ newPhase: AssistFlowPhase) {
-        // In stealth mode, the sprite isn't on any screen, so check assistScreenFrame instead.
-        guard spriteIsVisibleOnThisScreen || (companionManager.isStealthModeEnabled && isThisScreenTheAssistScreen) else { return }
+        // Chat is explicitly targeted to the assist screen, including when a
+        // saved conversation is opened from the menu on a different display.
+        if newPhase == .chatSidebar {
+            guard isThisScreenTheAssistScreen else { return }
+        } else {
+            // In stealth mode, the sprite isn't on any screen, so check the
+            // assist frame for the screenshot and response phases.
+            guard spriteIsVisibleOnThisScreen
+                    || (companionManager.isStealthModeEnabled && isThisScreenTheAssistScreen)
+            else {
+                return
+            }
+        }
 
         switch newPhase {
         case .inactive:
@@ -715,14 +726,120 @@ class InteractiveOverlayWindow: NSWindow {
     }
 }
 
+// MARK: - Chat Window
+
+enum ChatWindowGeometry {
+    static let defaultSidebarWidth: CGFloat = 380
+    static let minimumWidth: CGFloat = 320
+    static let maximumWidth: CGFloat = 640
+    static let minimumFloatingHeight: CGFloat = 240
+    static let defaultFloatingHeight: CGFloat = 320
+    static let verticalPadding: CGFloat = 40
+    static let dockingThreshold: CGFloat = 36
+
+    static func dockedFrame(
+        visibleScreenFrame: CGRect,
+        dockSide: ChatWindowDockSide,
+        requestedWidth: CGFloat
+    ) -> CGRect {
+        let maximumAllowedWidth = min(maximumWidth, visibleScreenFrame.width * 0.55)
+        let sidebarWidth = min(
+            max(requestedWidth, minimumWidth),
+            maximumAllowedWidth
+        )
+        let sidebarHeight = max(
+            minimumFloatingHeight,
+            visibleScreenFrame.height - (verticalPadding * 2)
+        )
+        let sidebarOriginX = dockSide == .left
+            ? visibleScreenFrame.minX
+            : visibleScreenFrame.maxX - sidebarWidth
+
+        return CGRect(
+            x: sidebarOriginX,
+            y: visibleScreenFrame.minY + verticalPadding,
+            width: sidebarWidth,
+            height: sidebarHeight
+        )
+    }
+
+    static func dockingSide(
+        floatingFrame: CGRect,
+        visibleScreenFrame: CGRect,
+        threshold: CGFloat = dockingThreshold
+    ) -> ChatWindowDockSide? {
+        if floatingFrame.minX <= visibleScreenFrame.minX + threshold {
+            return .left
+        }
+        if floatingFrame.maxX >= visibleScreenFrame.maxX - threshold {
+            return .right
+        }
+        return nil
+    }
+
+    static func clampedFloatingFrame(
+        floatingFrame: CGRect,
+        visibleScreenFrame: CGRect
+    ) -> CGRect {
+        let clampedWidth = min(
+            max(floatingFrame.width, minimumWidth),
+            visibleScreenFrame.width
+        )
+        let clampedHeight = min(
+            max(floatingFrame.height, minimumFloatingHeight),
+            visibleScreenFrame.height
+        )
+        let clampedOriginX = min(
+            max(floatingFrame.minX, visibleScreenFrame.minX),
+            visibleScreenFrame.maxX - clampedWidth
+        )
+        let clampedOriginY = min(
+            max(floatingFrame.minY, visibleScreenFrame.minY),
+            visibleScreenFrame.maxY - clampedHeight
+        )
+
+        return CGRect(
+            x: clampedOriginX,
+            y: clampedOriginY,
+            width: clampedWidth,
+            height: clampedHeight
+        )
+    }
+}
+
+private final class ChatPanelWindow: NSPanel {
+    init(contentRect: NSRect) {
+        super.init(
+            contentRect: contentRect,
+            styleMask: [.borderless, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+
+        isFloatingPanel = true
+        isOpaque = false
+        backgroundColor = .clear
+        level = .screenSaver
+        ignoresMouseEvents = false
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        isReleasedWhenClosed = false
+        hasShadow = false
+        hidesOnDeactivate = false
+        animationBehavior = .none
+    }
+
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
 // Manager for overlay windows — creates one per screen so the cursor
 // buddy seamlessly follows the cursor across multiple monitors.
 @MainActor
-class OverlayWindowManager {
+class OverlayWindowManager: NSObject, NSWindowDelegate {
     private var overlayWindows: [OverlayWindow] = []
     private var interactiveOverlayWindow: InteractiveOverlayWindow?
-    /// The chat sidebar window, shown when the user expands a response.
-    private var chatSidebarWindow: InteractiveOverlayWindow?
+    private var chatSidebarWindow: ChatPanelWindow?
+    private var chatWindowViewState: ChatWindowViewState?
     /// Dedicated floating window for the onboarding video with playback controls.
     private var onboardingVideoWindow: NSPanel?
     /// Local key event monitor installed while the interactive overlay is visible.
@@ -957,48 +1074,59 @@ class OverlayWindowManager {
 
     // MARK: - Chat Sidebar
 
-    /// Shows the chat sidebar anchored to the right edge of the given screen.
-    /// The sidebar slides in with an animation.
+    /// Shows the chat window at the user's most recently selected screen edge.
     func showChatSidebar(on screen: NSScreen, companionManager: CompanionManager) {
-        hideChatSidebar()
+        guard chatSidebarWindow == nil else { return }
 
-        let sidebarWidth: CGFloat = 380
-        let verticalPadding: CGFloat = 40
-        let sidebarHeight = screen.frame.height - (verticalPadding * 2)
-
-        // Position at the right edge of the screen
-        let sidebarFrame = NSRect(
-            x: screen.frame.maxX - sidebarWidth,
-            y: screen.frame.origin.y + verticalPadding,
-            width: sidebarWidth,
-            height: sidebarHeight
+        let dockSide = preferredChatDockSide
+        let sidebarFrame = ChatWindowGeometry.dockedFrame(
+            visibleScreenFrame: screen.visibleFrame,
+            dockSide: dockSide,
+            requestedWidth: ChatWindowGeometry.defaultSidebarWidth
         )
-
-        let window = InteractiveOverlayWindow(screen: screen)
-        window.setFrame(sidebarFrame, display: true)
-        window.isOpaque = false
-        window.backgroundColor = .clear
+        let windowViewState = ChatWindowViewState(
+            presentationMode: .docked(dockSide)
+        )
+        let window = ChatPanelWindow(contentRect: sidebarFrame)
+        window.delegate = self
+        window.contentMinSize = NSSize(
+            width: ChatWindowGeometry.minimumWidth,
+            height: sidebarFrame.height
+        )
+        window.contentMaxSize = NSSize(
+            width: min(ChatWindowGeometry.maximumWidth, screen.visibleFrame.width * 0.55),
+            height: sidebarFrame.height
+        )
 
         let sidebarView = ChatSidebarView(
             companionManager: companionManager,
+            windowViewState: windowViewState,
+            onMinimize: { [weak self] in
+                self?.detachChatSidebar()
+            },
             onClose: { [weak companionManager] in
                 companionManager?.closeChatSidebar()
             }
         )
-        .frame(width: sidebarWidth, height: sidebarHeight)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         let hostingView = NSHostingView(rootView: sidebarView)
-        hostingView.frame = NSRect(x: 0, y: 0, width: sidebarWidth, height: sidebarHeight)
+        hostingView.frame = NSRect(origin: .zero, size: sidebarFrame.size)
+        hostingView.autoresizingMask = [.width, .height]
         window.contentView = hostingView
 
-        // Start off-screen to the right for slide-in animation
+        let offScreenOriginX = dockSide == .left
+            ? screen.visibleFrame.minX - sidebarFrame.width
+            : screen.visibleFrame.maxX
         let offScreenFrame = NSRect(
-            x: screen.frame.maxX,
+            x: offScreenOriginX,
             y: sidebarFrame.origin.y,
-            width: sidebarWidth,
-            height: sidebarHeight
+            width: sidebarFrame.width,
+            height: sidebarFrame.height
         )
         window.setFrame(offScreenFrame, display: false)
+        chatSidebarWindow = window
+        chatWindowViewState = windowViewState
         window.orderFrontRegardless()
 
         NSApp.activate(ignoringOtherApps: true)
@@ -1006,35 +1134,221 @@ class OverlayWindowManager {
 
         // Animate slide-in
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.25
+            context.duration = 0.22
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             window.animator().setFrame(sidebarFrame, display: true)
         }
-
-        chatSidebarWindow = window
     }
 
-    /// Hides the chat sidebar with a slide-out animation.
+    /// Hides the chat window using the direction implied by its current mode.
     func hideChatSidebar() {
         guard let window = chatSidebarWindow else { return }
         chatSidebarWindow = nil
+        let presentationMode = chatWindowViewState?.presentationMode
+        chatWindowViewState = nil
+        window.delegate = nil
 
-        let currentFrame = window.frame
-        let offScreenFrame = NSRect(
-            x: currentFrame.maxX,
-            y: currentFrame.origin.y,
-            width: currentFrame.width,
-            height: currentFrame.height
+        switch presentationMode {
+        case .docked(let dockSide):
+            let currentFrame = window.frame
+            let screenFrame = window.screen?.visibleFrame ?? currentFrame
+            let offScreenOriginX = dockSide == .left
+                ? screenFrame.minX - currentFrame.width
+                : screenFrame.maxX
+            let offScreenFrame = NSRect(
+                x: offScreenOriginX,
+                y: currentFrame.origin.y,
+                width: currentFrame.width,
+                height: currentFrame.height
+            )
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.18
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                window.animator().setFrame(offScreenFrame, display: true)
+            }, completionHandler: {
+                window.orderOut(nil)
+                window.contentView = nil
+            })
+        case .floating, .none:
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.15
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                window.animator().alphaValue = 0
+            }, completionHandler: {
+                window.orderOut(nil)
+                window.contentView = nil
+            })
+        }
+    }
+
+    private var preferredChatDockSide: ChatWindowDockSide {
+        let savedDockSide = UserDefaults.standard.string(forKey: "chatWindowDockSide")
+        return ChatWindowDockSide(rawValue: savedDockSide ?? "") ?? .right
+    }
+
+    private func detachChatSidebar() {
+        guard let window = chatSidebarWindow,
+              let windowViewState = chatWindowViewState,
+              case .docked(let dockSide) = windowViewState.presentationMode,
+              let screen = window.screen
+        else {
+            return
+        }
+
+        let visibleScreenFrame = screen.visibleFrame
+        let floatingWidth = min(max(window.frame.width, 360), 520)
+        let floatingHeight = min(
+            ChatWindowGeometry.defaultFloatingHeight,
+            visibleScreenFrame.height
+        )
+        let floatingOriginX = dockSide == .left
+            ? visibleScreenFrame.minX + 24
+            : visibleScreenFrame.maxX - floatingWidth - 24
+        let proposedFloatingFrame = NSRect(
+            x: floatingOriginX,
+            y: visibleScreenFrame.maxY - floatingHeight - 36,
+            width: floatingWidth,
+            height: floatingHeight
+        )
+        let floatingFrame = ChatWindowGeometry.clampedFloatingFrame(
+            floatingFrame: proposedFloatingFrame,
+            visibleScreenFrame: visibleScreenFrame
         )
 
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.25
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            window.animator().setFrame(offScreenFrame, display: true)
-        }, completionHandler: {
-            window.orderOut(nil)
-            window.contentView = nil
-        })
+        windowViewState.presentationMode = .floating
+        window.contentMinSize = NSSize(
+            width: ChatWindowGeometry.minimumWidth,
+            height: ChatWindowGeometry.minimumFloatingHeight
+        )
+        window.contentMaxSize = NSSize(
+            width: min(720, visibleScreenFrame.width),
+            height: visibleScreenFrame.height
+        )
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.2
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            window.animator().setFrame(floatingFrame, display: true)
+        }
+    }
+
+    private func dockChatSidebar(
+        to dockSide: ChatWindowDockSide,
+        on screen: NSScreen,
+        animated: Bool
+    ) {
+        guard let window = chatSidebarWindow,
+              let windowViewState = chatWindowViewState
+        else {
+            return
+        }
+
+        let dockedFrame = ChatWindowGeometry.dockedFrame(
+            visibleScreenFrame: screen.visibleFrame,
+            dockSide: dockSide,
+            requestedWidth: window.frame.width
+        )
+        windowViewState.presentationMode = .docked(dockSide)
+        UserDefaults.standard.set(dockSide.rawValue, forKey: "chatWindowDockSide")
+        window.contentMinSize = NSSize(
+            width: ChatWindowGeometry.minimumWidth,
+            height: dockedFrame.height
+        )
+        window.contentMaxSize = NSSize(
+            width: min(ChatWindowGeometry.maximumWidth, screen.visibleFrame.width * 0.55),
+            height: dockedFrame.height
+        )
+
+        guard animated else {
+            window.setFrame(dockedFrame, display: true)
+            return
+        }
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.2
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            window.animator().setFrame(dockedFrame, display: true)
+        }
+    }
+
+    func windowWillResize(
+        _ sender: NSWindow,
+        to frameSize: NSSize
+    ) -> NSSize {
+        guard sender === chatSidebarWindow,
+              let windowViewState = chatWindowViewState,
+              let screen = sender.screen
+        else {
+            return frameSize
+        }
+
+        let maximumAllowedWidth = windowViewState.presentationMode.isFloating
+            ? min(720, screen.visibleFrame.width)
+            : min(ChatWindowGeometry.maximumWidth, screen.visibleFrame.width * 0.55)
+        let constrainedWidth = min(
+            max(frameSize.width, ChatWindowGeometry.minimumWidth),
+            maximumAllowedWidth
+        )
+
+        switch windowViewState.presentationMode {
+        case .docked:
+            let dockedHeight = max(
+                ChatWindowGeometry.minimumFloatingHeight,
+                screen.visibleFrame.height - (ChatWindowGeometry.verticalPadding * 2)
+            )
+            return NSSize(width: constrainedWidth, height: dockedHeight)
+        case .floating:
+            let constrainedHeight = min(
+                max(frameSize.height, ChatWindowGeometry.minimumFloatingHeight),
+                screen.visibleFrame.height
+            )
+            return NSSize(width: constrainedWidth, height: constrainedHeight)
+        }
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window === chatSidebarWindow,
+              let windowViewState = chatWindowViewState,
+              let screen = window.screen
+        else {
+            return
+        }
+
+        switch windowViewState.presentationMode {
+        case .docked(let dockSide):
+            dockChatSidebar(to: dockSide, on: screen, animated: false)
+        case .floating:
+            let clampedFrame = ChatWindowGeometry.clampedFloatingFrame(
+                floatingFrame: window.frame,
+                visibleScreenFrame: screen.visibleFrame
+            )
+            window.setFrame(clampedFrame, display: true)
+        }
+    }
+
+    func windowDidEndLiveMove(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window === chatSidebarWindow,
+              chatWindowViewState?.presentationMode == .floating,
+              let screen = window.screen
+        else {
+            return
+        }
+
+        if let dockSide = ChatWindowGeometry.dockingSide(
+            floatingFrame: window.frame,
+            visibleScreenFrame: screen.visibleFrame
+        ) {
+            dockChatSidebar(to: dockSide, on: screen, animated: true)
+            return
+        }
+
+        let clampedFrame = ChatWindowGeometry.clampedFloatingFrame(
+            floatingFrame: window.frame,
+            visibleScreenFrame: screen.visibleFrame
+        )
+        window.setFrame(clampedFrame, display: true)
     }
 
     func hideOverlay() {
