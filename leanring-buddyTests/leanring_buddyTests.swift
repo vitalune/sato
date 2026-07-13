@@ -38,4 +38,15 @@ struct leanring_buddyTests {
         #expect(shouldTreatPermissionAsGranted)
     }
 
+    @Test func removedOpenAIModelsMigrateToLuna() {
+        #expect(
+            OpenAIProvider.resolvedModelID("gpt-5.4-2026-03-05")
+                == "gpt-5.6-luna"
+        )
+        #expect(
+            OpenAIProvider.resolvedModelID("gpt-5.6-terra")
+                == "gpt-5.6-terra"
+        )
+    }
+
 }

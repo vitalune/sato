@@ -73,9 +73,10 @@ final class ProviderManager: ObservableObject {
     // MARK: - Init
 
     init() {
+        let savedOpenAIModelID = UserDefaults.standard.string(forKey: "openAIModel")
         self.selectedProviderID = UserDefaults.standard.string(forKey: "selectedProvider") ?? "anthropic"
         self.anthropicModelID = UserDefaults.standard.string(forKey: "anthropicModel") ?? AnthropicProvider.defaultModelID
-        self.openAIModelID = UserDefaults.standard.string(forKey: "openAIModel") ?? OpenAIProvider.defaultModelID
+        self.openAIModelID = OpenAIProvider.resolvedModelID(savedOpenAIModelID)
         self.ollamaLocalModelName = UserDefaults.standard.string(forKey: "ollamaLocalModel") ?? ""
         self.ollamaCloudModelName = UserDefaults.standard.string(forKey: "ollamaCloudModel") ?? OllamaCloudProvider.defaultModelID
 
@@ -89,6 +90,10 @@ final class ProviderManager: ObservableObject {
 
         if ollamaCloudModelName == "qwen3-vl-cloud" {
             ollamaCloudModelName = OllamaCloudProvider.defaultModelID
+        }
+
+        if savedOpenAIModelID != openAIModelID {
+            UserDefaults.standard.set(openAIModelID, forKey: "openAIModel")
         }
     }
 
@@ -109,7 +114,10 @@ final class ProviderManager: ObservableObject {
         }
 
         let overrideProvider = provider(forProviderID: overrideProviderID)
-        return (overrideProvider, overrideModelID)
+        let resolvedOverrideModelID = overrideProviderID == "openai"
+            ? OpenAIProvider.resolvedModelID(overrideModelID)
+            : overrideModelID
+        return (overrideProvider, resolvedOverrideModelID)
     }
 
     // MARK: - Ollama Local Discovery

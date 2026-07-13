@@ -19,12 +19,20 @@ final class OpenAIProvider: AIProvider {
     let supportsVision = true
 
     static let availableModels = [
-        OpenAIModel(id: "gpt-5.4-2026-03-05", displayName: "GPT-5.4"),
-        OpenAIModel(id: "gpt-5.4-mini-2026-03-17", displayName: "GPT-5.4 Mini"),
-        OpenAIModel(id: "gpt-5.4-nano-2026-03-17", displayName: "GPT-5.4 Nano"),
+        OpenAIModel(id: "gpt-5.6-luna", displayName: "GPT-5.6 Luna"),
+        OpenAIModel(id: "gpt-5.6-terra", displayName: "GPT-5.6 Terra"),
     ]
 
-    static let defaultModelID = "gpt-5.4-2026-03-05"
+    static let defaultModelID = "gpt-5.6-luna"
+
+    static func resolvedModelID(_ requestedModelID: String?) -> String {
+        guard let requestedModelID,
+              availableModels.contains(where: { $0.id == requestedModelID })
+        else {
+            return defaultModelID
+        }
+        return requestedModelID
+    }
 
     private let baseURL = URL(string: "https://api.openai.com/v1/responses")!
 

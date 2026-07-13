@@ -239,6 +239,7 @@ cat > "$RELEASE_NOTES_PATH" <<EOF
 - Resize docked chat with responsive message and Markdown wrapping.
 - Reopen the five most recent conversations from the menu bar.
 - Pin important conversations so they persist beyond the recent-history limit.
+- Choose GPT-5.6 Luna or GPT-5.6 Terra as the OpenAI model.
 EOF
 
 DMG_SIZE=$(stat -f%z "$DMG_PATH")
