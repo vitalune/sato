@@ -29,15 +29,29 @@ enum AssistFlowPhase: Equatable {
 }
 
 /// A single message in the chat sidebar conversation.
-struct ChatSidebarMessage: Identifiable {
-    let id = UUID()
+struct ChatSidebarMessage: Identifiable, Equatable {
+    let id: UUID
     let role: ChatSidebarMessageRole
     var text: String
     let imageData: Data?
     let timestamp: Date
+
+    init(
+        id: UUID = UUID(),
+        role: ChatSidebarMessageRole,
+        text: String,
+        imageData: Data?,
+        timestamp: Date = Date()
+    ) {
+        self.id = id
+        self.role = role
+        self.text = text
+        self.imageData = imageData
+        self.timestamp = timestamp
+    }
 }
 
-enum ChatSidebarMessageRole {
+enum ChatSidebarMessageRole: String, Codable {
     case user
     case assistant
 }
@@ -88,6 +102,9 @@ final class CompanionManager: ObservableObject {
     /// Whether the chat sidebar is currently streaming a follow-up response.
     @Published var chatSidebarIsStreaming: Bool = false
 
+    /// The persisted conversation currently displayed in the chat window.
+    @Published private(set) var activeConversationID: UUID?
+
     /// When ON, skip the speech bubble and go straight to the chat sidebar.
     @Published var alwaysOpenChatSidebar: Bool = UserDefaults.standard.bool(forKey: "alwaysOpenChatSidebar")
 
@@ -100,66 +117,84 @@ final class CompanionManager: ObservableObject {
     /// response and conversation context.
     func openChatSidebar() {
         guard assistFlowPhase == .showingResponse else { return }
-
-        // Build initial messages from the current assist flow
-        var messages: [ChatSidebarMessage] = []
-
-        // Add the screenshot + user question as the first message pair
-        if let imageData = assistCroppedImageData {
-            messages.append(ChatSidebarMessage(
-                role: .user,
-                text: "", // The question text is added below
-                imageData: imageData,
-                timestamp: Date()
-            ))
-        }
-
-        // Walk conversation history to find the current exchange and build messages.
-        // The last entry in conversationHistory is the current response.
-        if let lastExchange = conversationHistory.last {
-            // Replace the user message text with the actual question
-            if !messages.isEmpty {
-                messages[messages.count - 1] = ChatSidebarMessage(
-                    role: .user,
-                    text: lastExchange.userTranscript,
-                    imageData: messages[messages.count - 1].imageData,
-                    timestamp: Date()
-                )
-            } else {
-                messages.append(ChatSidebarMessage(
-                    role: .user,
-                    text: lastExchange.userTranscript,
-                    imageData: nil,
-                    timestamp: Date()
-                ))
-            }
-
-            messages.append(ChatSidebarMessage(
-                role: .assistant,
-                text: lastExchange.assistantResponse,
-                imageData: nil,
-                timestamp: Date()
-            ))
-        }
-
-        chatSidebarMessages = messages
+        guard !chatSidebarMessages.isEmpty else { return }
         assistFlowPhase = .chatSidebar
-        print("💬 Chat sidebar opened with \(messages.count) messages")
+        print("💬 Chat sidebar opened with \(chatSidebarMessages.count) messages")
+    }
+
+    /// Restores a persisted conversation and opens it on the display containing
+    /// the pointer, which is also the display containing the menu panel click.
+    func openSavedConversation(conversationID: UUID) {
+        guard let conversation = conversationStore.conversation(conversationID: conversationID) else {
+            return
+        }
+
+        currentResponseTask?.cancel()
+        currentResponseTask = nil
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+
+        let screenshotData = conversationStore.screenshotData(conversationID: conversationID)
+        chatSidebarMessages = conversation.messages.enumerated().map { messageIndex, message in
+            let messageImageData = messageIndex == 0 && message.role == .user
+                ? screenshotData
+                : nil
+            return message.chatSidebarMessage(imageData: messageImageData)
+        }
+        activeConversationID = conversationID
+        conversationStore.setProtectedConversation(conversationID: conversationID)
+        assistCroppedImageData = screenshotData
+        assistResponseText = ""
+        assistResponseIsStreaming = false
+        chatSidebarIsStreaming = false
+
+        let pointerScreenPosition = NSEvent.mouseLocation
+        let pointerScreen = NSScreen.screens.first {
+            $0.frame.contains(pointerScreenPosition)
+        } ?? NSScreen.main
+        guard let pointerScreen else { return }
+        assistScreenFrame = pointerScreen.frame
+        overlayWindowManager.retargetChatSidebar(to: pointerScreen)
+
+        if !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+
+        assistFlowPhase = .chatSidebar
+    }
+
+    func setConversationPinned(conversationID: UUID, isPinned: Bool) {
+        conversationStore.setConversationPinned(
+            conversationID: conversationID,
+            isPinned: isPinned
+        )
     }
 
     /// Sends a follow-up message from the chat sidebar. Uses the original screenshot
     /// context from conversation history — no new screenshot required.
     func sendChatSidebarFollowUp(messageText: String) {
         let trimmedText = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedText.isEmpty else { return }
+        guard !trimmedText.isEmpty,
+              let activeConversationID
+        else {
+            return
+        }
+
+        let previousConversationMessages = chatSidebarMessages
 
         // Add user message to sidebar
-        chatSidebarMessages.append(ChatSidebarMessage(
+        let userMessage = ChatSidebarMessage(
             role: .user,
             text: trimmedText,
             imageData: nil,
             timestamp: Date()
-        ))
+        )
+        chatSidebarMessages.append(userMessage)
+        conversationStore.appendMessage(
+            conversationID: activeConversationID,
+            message: userMessage
+        )
 
         // Add placeholder assistant message that will be streamed into
         let assistantMessageIndex = chatSidebarMessages.count
@@ -183,7 +218,7 @@ final class CompanionManager: ObservableObject {
 
                 let messages = self.buildProviderMessages(
                     imageData: assistCroppedImageData,
-                    conversationHistory: conversationHistory,
+                    conversationMessages: previousConversationMessages,
                     currentUserPrompt: trimmedText
                 )
 
@@ -211,13 +246,12 @@ final class CompanionManager: ObservableObject {
                     self.spriteAnimationManager.stopMessageDeliveredLoop()
                 }
 
-                // Save to conversation history
-                conversationHistory.append((
-                    userTranscript: trimmedText,
-                    assistantResponse: responseText
-                ))
-                if conversationHistory.count > conversationHistoryLimit {
-                    conversationHistory.removeFirst(conversationHistory.count - conversationHistoryLimit)
+                if assistantMessageIndex < chatSidebarMessages.count {
+                    let assistantMessage = chatSidebarMessages[assistantMessageIndex]
+                    conversationStore.appendMessage(
+                        conversationID: activeConversationID,
+                        message: assistantMessage
+                    )
                 }
 
                 print("🧠 Chat sidebar follow-up complete (\(responseText.count) chars)")
@@ -230,6 +264,10 @@ final class CompanionManager: ObservableObject {
                 print("⚠️ Chat sidebar error: \(error)")
                 if assistantMessageIndex < chatSidebarMessages.count {
                     chatSidebarMessages[assistantMessageIndex].text = "Error: \(error.localizedDescription)"
+                    conversationStore.appendMessage(
+                        conversationID: activeConversationID,
+                        message: chatSidebarMessages[assistantMessageIndex]
+                    )
                 }
                 chatSidebarIsStreaming = false
                 if !self.isStealthModeEnabled {
@@ -244,6 +282,8 @@ final class CompanionManager: ObservableObject {
         assistFlowPhase = .inactive
         chatSidebarMessages = []
         chatSidebarIsStreaming = false
+        activeConversationID = nil
+        conversationStore.setProtectedConversation(conversationID: nil)
         assistResponseText = ""
         assistResponseIsStreaming = false
         // Keep assistCroppedImageData so conversation history retains screenshot context
@@ -334,6 +374,7 @@ final class CompanionManager: ObservableObject {
     let overlayWindowManager = OverlayWindowManager()
     let spriteAnimationManager = SpriteAnimationManager()
     let contextManager = ContextManager()
+    let conversationStore = ConversationStore()
     let providerManager = ProviderManager()
 
     /// Name of the currently active context profile, for display in the speech bubble header.
@@ -342,27 +383,6 @@ final class CompanionManager: ObservableObject {
     }
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
-
-    /// Conversation history so Claude remembers prior exchanges within a session.
-    /// Each entry is the user's transcript and Claude's response.
-    private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
-
-    /// Maximum number of conversation history entries to keep. Persisted to UserDefaults.
-    @Published var conversationHistoryLimit: Int = UserDefaults.standard.object(forKey: "conversationHistoryLimit") as? Int ?? 30
-
-    func setConversationHistoryLimit(_ limit: Int) {
-        let clampedLimit = max(5, min(50, limit))
-        conversationHistoryLimit = clampedLimit
-        UserDefaults.standard.set(clampedLimit, forKey: "conversationHistoryLimit")
-        // Trim existing history if it exceeds the new limit
-        if conversationHistory.count > clampedLimit {
-            conversationHistory.removeFirst(conversationHistory.count - clampedLimit)
-        }
-    }
-
-    func clearConversationHistory() {
-        conversationHistory.removeAll()
-    }
 
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
@@ -807,6 +827,19 @@ final class CompanionManager: ObservableObject {
             return
         }
 
+        let userMessage = ChatSidebarMessage(
+            role: .user,
+            text: questionText,
+            imageData: imageData,
+            timestamp: Date()
+        )
+        chatSidebarMessages = [userMessage]
+        let conversationID = conversationStore.createConversation(
+            userMessage: userMessage,
+            screenshotData: imageData
+        )
+        activeConversationID = conversationID
+        conversationStore.setProtectedConversation(conversationID: conversationID)
         assistFlowPhase = .showingResponse
         assistResponseText = ""
         assistResponseIsStreaming = true
@@ -825,7 +858,7 @@ final class CompanionManager: ObservableObject {
 
                 let messages = self.buildProviderMessages(
                     imageData: imageData,
-                    conversationHistory: [],
+                    conversationMessages: [],
                     currentUserPrompt: questionText
                 )
 
@@ -844,14 +877,17 @@ final class CompanionManager: ObservableObject {
                 assistResponseText = responseText
                 assistResponseIsStreaming = false
 
-                // Save to conversation history
-                conversationHistory.append((
-                    userTranscript: questionText,
-                    assistantResponse: responseText
-                ))
-                if conversationHistory.count > conversationHistoryLimit {
-                    conversationHistory.removeFirst(conversationHistory.count - conversationHistoryLimit)
-                }
+                let assistantMessage = ChatSidebarMessage(
+                    role: .assistant,
+                    text: responseText,
+                    imageData: nil,
+                    timestamp: Date()
+                )
+                chatSidebarMessages.append(assistantMessage)
+                conversationStore.appendMessage(
+                    conversationID: conversationID,
+                    message: assistantMessage
+                )
 
                 print("🧠 Assist: response complete (\(responseText.count) chars)")
 
@@ -872,8 +908,20 @@ final class CompanionManager: ObservableObject {
                 }
             } catch {
                 print("⚠️ Assist error: \(error)")
-                assistResponseText = "Error: \(error.localizedDescription)"
+                let errorMessageText = "Error: \(error.localizedDescription)"
+                assistResponseText = errorMessageText
                 assistResponseIsStreaming = false
+                let errorMessage = ChatSidebarMessage(
+                    role: .assistant,
+                    text: errorMessageText,
+                    imageData: nil,
+                    timestamp: Date()
+                )
+                chatSidebarMessages.append(errorMessage)
+                conversationStore.appendMessage(
+                    conversationID: conversationID,
+                    message: errorMessage
+                )
                 if !self.isStealthModeEnabled {
                     self.spriteAnimationManager.stopMessageDeliveredLoop()
                 }
@@ -891,6 +939,8 @@ final class CompanionManager: ObservableObject {
         assistScreenshotImage = nil
         chatSidebarMessages = []
         chatSidebarIsStreaming = false
+        activeConversationID = nil
+        conversationStore.setProtectedConversation(conversationID: nil)
 
         if isStealthModeEnabled {
             return
@@ -917,6 +967,8 @@ final class CompanionManager: ObservableObject {
         assistScreenshotImage = nil
         chatSidebarMessages = []
         chatSidebarIsStreaming = false
+        activeConversationID = nil
+        conversationStore.setProtectedConversation(conversationID: nil)
 
         if isStealthModeEnabled {
             return
@@ -1001,18 +1053,26 @@ final class CompanionManager: ObservableObject {
         return (providerID, modelID)
     }
 
-    /// Converts conversation history and the current user prompt into the
+    /// Converts the active conversation and current user prompt into the
     /// unified AIProviderMessage array expected by all providers.
     private func buildProviderMessages(
         imageData: Data?,
-        conversationHistory: [(userTranscript: String, assistantResponse: String)],
+        conversationMessages: [ChatSidebarMessage],
         currentUserPrompt: String
     ) -> [AIProviderMessage] {
         var messages: [AIProviderMessage] = []
 
-        for entry in conversationHistory {
-            messages.append(AIProviderMessage(role: .user, text: entry.userTranscript, images: nil))
-            messages.append(AIProviderMessage(role: .assistant, text: entry.assistantResponse, images: nil))
+        for conversationMessage in conversationMessages.suffix(60) {
+            let providerRole: AIProviderMessage.Role = conversationMessage.role == .user
+                ? .user
+                : .assistant
+            messages.append(
+                AIProviderMessage(
+                    role: providerRole,
+                    text: conversationMessage.text,
+                    images: nil
+                )
+            )
         }
 
         let images: [Data]? = imageData.map { [$0] }

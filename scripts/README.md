@@ -1,62 +1,86 @@
-# Release Scripts
+# Sato release candidate workflow
 
-## `release.sh` — Ship a new version of Sato
+`release.sh` prepares a Developer ID-signed, Apple-notarized, Sparkle-signed
+release candidate. It does not build through the terminal and does not publish
+anything.
 
-Automates the full release pipeline: build → sign → DMG → notarize → Sparkle appcast → GitHub Release.
+## 1. Set the version
 
-### Quick start
+For v1.2.0, set these values in `leanring-buddy/Info.plist` before archiving:
 
-```bash
-# Auto-bumps version and build number from the latest GitHub Release
-./scripts/release.sh
+```xml
+<key>CFBundleShortVersionString</key>
+<string>1.2.0</string>
+<key>CFBundleVersion</key>
+<string>10200</string>
 ```
 
-The script checks GitHub for the latest release (e.g. `v1.5`, build 6) and automatically bumps to `v1.6`, build 7. You'll see a confirmation prompt before anything runs.
+The build number is derived as `major + two-digit minor + two-digit patch`.
 
-### Override version or build
+## 2. Archive and export in Xcode
+
+1. Open `leanring-buddy.xcodeproj`.
+2. Select the `leanring-buddy` scheme and `Any Mac`.
+3. Choose Product → Archive.
+4. In Organizer, choose Distribute App → Developer ID → Export.
+5. Export the signed app as `Sato.app`.
+
+Do not run `xcodebuild` from Terminal. Terminal builds invalidate the app's TCC
+permissions in this project.
+
+## 3. Prepare the candidate
 
 ```bash
-# Set a specific marketing version (auto-bumps build)
-./scripts/release.sh 2.0
+brew install create-dmg
 
-# Set both marketing version and build number
-./scripts/release.sh 2.0 10
+# The default Keychain profile is "sato-notarization".
+./scripts/release.sh 1.2.0 ~/Desktop/Sato.app
+
+# To use a different notary profile or Sparkle tool location:
+SATO_NOTARY_PROFILE=my-profile \
+SPARKLE_BIN=/path/to/Sparkle/bin \
+./scripts/release.sh 1.2.0 ~/Desktop/Sato.app
 ```
 
-### Safety
+The script:
 
-- **Duplicate detection**: If the tag already exists on GitHub, the script exits with an error and suggests what to do.
-- **Confirmation prompt**: Shows the version, build, and previous release before proceeding. Press `y` to continue.
+1. Confirms the exported app has the requested version and build number.
+2. Verifies its Developer ID signature.
+3. Notarizes and staples the app.
+4. Creates `Sato-<version>.dmg`.
+5. Notarizes, staples, and Gatekeeper-validates the DMG.
+6. Signs the final DMG with Sparkle EdDSA.
+7. Generates and validates a staged `appcast.xml`.
+8. Writes release notes and all artifacts under
+   `build/release-candidate-v<version>/`.
 
-### What it does
+It never creates a git tag, GitHub Release, or website commit. Those actions
+happen only after the candidate has been reviewed and publication is explicitly
+approved.
 
-1. Fetches the latest release from GitHub to determine version + build
-2. Archives the app via `xcodebuild`
-3. Exports a signed `.app` with Developer ID
-4. Creates a DMG with the drag-to-Applications background
-5. Notarizes the DMG with Apple (Gatekeeper compliance)
-6. Signs the DMG with the Sparkle EdDSA key
-7. Generates `appcast.xml` for Sparkle auto-updates
-8. Creates a GitHub Release with the DMG attached
-9. Pushes the updated `appcast.xml` to the releases repo
+## Prerequisites
 
-### One-time setup (prerequisites)
+- macOS with Xcode and the Developer ID certificate installed
+- `create-dmg`
+- notarization credentials stored in Keychain:
 
-1. **Xcode** with your Developer ID signing certificate
-2. **Homebrew tools**:
-   ```bash
-   brew install create-dmg gh
-   ```
-3. **GitHub CLI auth**:
-   ```bash
-   gh auth login
-   ```
-4. **Apple notarization credentials** (stored in Keychain):
-   ```bash
-   xcrun notarytool store-credentials "AC_PASSWORD" \
-       --apple-id YOUR_APPLE_ID \
-       --team-id YOUR_TEAM_ID
-   ```
-   You'll be prompted for an app-specific password (generate one at [appleid.apple.com](https://appleid.apple.com)).
-5. **Sparkle EdDSA key** — already generated and stored in Keychain (done during initial Sparkle setup)
-6. **Build the project in Xcode at least once** so SPM downloads Sparkle and the Sparkle CLI tools are available
+```bash
+xcrun notarytool store-credentials "sato-notarization" \
+  --apple-id "YOUR_APPLE_ID" \
+  --team-id "UP52GQK38V" \
+  --password "YOUR_APP_SPECIFIC_PASSWORD"
+```
+
+- Sparkle's `sign_update` and `generate_appcast` tools, normally downloaded by
+  Swift Package Manager after an Xcode build
+
+## Publication checklist
+
+After explicit approval:
+
+1. Tag the exact reviewed source commit as `v<version>`.
+2. Create a GitHub Release in `vitalune/sato` and upload the DMG.
+3. Copy the staged appcast to `sato-site/public/appcast.xml`.
+4. Deploy `sato-site`.
+5. Confirm `https://sato.host/appcast.xml` returns the new version and that the
+   DMG URL, file length, and EdDSA signature match the candidate.
