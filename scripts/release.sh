@@ -13,6 +13,8 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="${1:-}"
 EXPORTED_APP_PATH="${2:-}"
 NOTARY_PROFILE="${SATO_NOTARY_PROFILE:-sato-notarization}"
+DEVELOPER_IDENTITY="${SATO_DEVELOPER_IDENTITY:-Developer ID Application: Amir Valizadeh (UP52GQK38V)}"
+DEVELOPER_IDENTITY_HASH="${SATO_DEVELOPER_IDENTITY_HASH:-}"
 GITHUB_REPOSITORY="vitalune/sato"
 DMG_BACKGROUND="${PROJECT_DIR}/assets/dmg/background.png"
 
@@ -42,12 +44,40 @@ if [ "$(basename "$EXPORTED_APP_PATH")" != "Sato.app" ]; then
     exit 1
 fi
 
-for requiredCommand in create-dmg codesign ditto spctl stat xcrun; do
+for requiredCommand in create-dmg codesign ditto security spctl stat xcrun; do
     if ! command -v "$requiredCommand" >/dev/null 2>&1; then
         echo "Missing required command: $requiredCommand"
         exit 1
     fi
 done
+
+availableSigningIdentities="$(security find-identity -v -p codesigning)"
+if [ -n "$DEVELOPER_IDENTITY_HASH" ]; then
+    if [[ "$availableSigningIdentities" != *"$DEVELOPER_IDENTITY_HASH"* ]]; then
+        echo "Developer ID signing identity hash not found: $DEVELOPER_IDENTITY_HASH"
+        exit 1
+    fi
+else
+    matchingIdentityHashes=()
+    while IFS= read -r signingIdentityLine; do
+        if [[ "$signingIdentityLine" == *"\"${DEVELOPER_IDENTITY}\""* ]]; then
+            signingIdentityRemainder="${signingIdentityLine#*) }"
+            matchingIdentityHashes+=("${signingIdentityRemainder%% *}")
+        fi
+    done <<< "$availableSigningIdentities"
+
+    if [ "${#matchingIdentityHashes[@]}" -eq 0 ]; then
+        echo "Developer ID signing identity not found: $DEVELOPER_IDENTITY"
+        echo "Set SATO_DEVELOPER_IDENTITY if the certificate name differs."
+        exit 1
+    fi
+
+    DEVELOPER_IDENTITY_HASH="${matchingIdentityHashes[0]}"
+    if [ "${#matchingIdentityHashes[@]}" -gt 1 ]; then
+        echo "Multiple certificates share the Developer ID name."
+        echo "Using certificate hash: $DEVELOPER_IDENTITY_HASH"
+    fi
+fi
 
 if [ ! -f "$DMG_BACKGROUND" ]; then
     echo "DMG background not found: $DMG_BACKGROUND"
@@ -164,6 +194,13 @@ if [ ! -f "$DMG_PATH" ]; then
     exit 1
 fi
 
+echo "Signing the DMG with Developer ID..."
+codesign --force \
+    --sign "$DEVELOPER_IDENTITY_HASH" \
+    --timestamp \
+    "$DMG_PATH"
+codesign --verify --verbose=2 "$DMG_PATH"
+
 echo "Submitting the DMG for notarization..."
 xcrun notarytool submit "$DMG_PATH" \
     --keychain-profile "$NOTARY_PROFILE" \
@@ -202,6 +239,7 @@ cat > "$RELEASE_NOTES_PATH" <<EOF
 - Resize docked chat with responsive message and Markdown wrapping.
 - Reopen the five most recent conversations from the menu bar.
 - Pin important conversations so they persist beyond the recent-history limit.
+- Choose GPT-5.6 Luna or GPT-5.6 Terra as the OpenAI model.
 EOF
 
 DMG_SIZE=$(stat -f%z "$DMG_PATH")

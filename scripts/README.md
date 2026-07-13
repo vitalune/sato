@@ -6,7 +6,8 @@ anything.
 
 ## 1. Set the version
 
-For v1.2.0, set these values in `leanring-buddy/Info.plist` before archiving:
+For v1.2.0, these values must match in both the app target's Xcode build
+settings and `leanring-buddy/Info.plist` before archiving:
 
 ```xml
 <key>CFBundleShortVersionString</key>
@@ -16,6 +17,7 @@ For v1.2.0, set these values in `leanring-buddy/Info.plist` before archiving:
 ```
 
 The build number is derived as `major + two-digit minor + two-digit patch`.
+The repository is already configured for v1.2.0 (10200).
 
 ## 2. Archive and export in Xcode
 
@@ -38,6 +40,8 @@ brew install create-dmg
 
 # To use a different notary profile or Sparkle tool location:
 SATO_NOTARY_PROFILE=my-profile \
+SATO_DEVELOPER_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+SATO_DEVELOPER_IDENTITY_HASH=OPTIONAL_CERTIFICATE_SHA1 \
 SPARKLE_BIN=/path/to/Sparkle/bin \
 ./scripts/release.sh 1.2.0 ~/Desktop/Sato.app
 ```
@@ -48,10 +52,11 @@ The script:
 2. Verifies its Developer ID signature.
 3. Notarizes and staples the app.
 4. Creates `Sato-<version>.dmg`.
-5. Notarizes, staples, and Gatekeeper-validates the DMG.
-6. Signs the final DMG with Sparkle EdDSA.
-7. Generates and validates a staged `appcast.xml`.
-8. Writes release notes and all artifacts under
+5. Developer ID-signs the DMG.
+6. Notarizes, staples, and Gatekeeper-validates the DMG.
+7. Signs the final DMG with Sparkle EdDSA.
+8. Generates and validates a staged `appcast.xml`.
+9. Writes release notes and all artifacts under
    `build/release-candidate-v<version>/`.
 
 It never creates a git tag, GitHub Release, or website commit. Those actions
@@ -73,6 +78,10 @@ xcrun notarytool store-credentials "sato-notarization" \
 
 - Sparkle's `sign_update` and `generate_appcast` tools, normally downloaded by
   Swift Package Manager after an Xcode build
+
+If the Keychain contains duplicate certificates with the same Developer ID
+name, the script selects a specific valid certificate by SHA-1 hash. Set
+`SATO_DEVELOPER_IDENTITY_HASH` only when you need to override that selection.
 
 ## Publication checklist
 

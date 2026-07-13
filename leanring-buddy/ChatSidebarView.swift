@@ -37,7 +37,7 @@ struct ChatSidebarView: View {
     @ObservedObject var companionManager: CompanionManager
     @ObservedObject var windowViewState: ChatWindowViewState
     let onMinimize: () -> Void
-    let onWindowDragEnded: () -> Void
+    let onWindowDragEnded: (CGPoint) -> Void
     let onClose: () -> Void
 
     @State private var followUpInputText: String = ""
@@ -392,7 +392,7 @@ struct ChatSidebarView: View {
 // MARK: - Window Drag Handle
 
 private struct WindowDragHandle: NSViewRepresentable {
-    let onDragEnded: () -> Void
+    let onDragEnded: (CGPoint) -> Void
 
     func makeNSView(context: Context) -> DraggableWindowRegionView {
         DraggableWindowRegionView(onDragEnded: onDragEnded)
@@ -404,9 +404,9 @@ private struct WindowDragHandle: NSViewRepresentable {
 }
 
 private final class DraggableWindowRegionView: NSView {
-    var onDragEnded: () -> Void
+    var onDragEnded: (CGPoint) -> Void
 
-    init(onDragEnded: @escaping () -> Void) {
+    init(onDragEnded: @escaping (CGPoint) -> Void) {
         self.onDragEnded = onDragEnded
         super.init(frame: .zero)
     }
@@ -439,11 +439,15 @@ private final class DraggableWindowRegionView: NSView {
         addCursorRect(bounds, cursor: .openHand)
     }
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
     override func mouseDown(with event: NSEvent) {
         NSCursor.closedHand.push()
         window?.performDrag(with: event)
         NSCursor.pop()
-        onDragEnded()
+        onDragEnded(NSEvent.mouseLocation)
     }
 }
 

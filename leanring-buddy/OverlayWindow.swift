@@ -735,7 +735,7 @@ enum ChatWindowGeometry {
     static let minimumFloatingHeight: CGFloat = 240
     static let defaultFloatingHeight: CGFloat = 320
     static let verticalPadding: CGFloat = 40
-    static let dockingThreshold: CGFloat = 36
+    static let dockingThreshold: CGFloat = 24
 
     static func dockedFrame(
         visibleScreenFrame: CGRect,
@@ -764,14 +764,14 @@ enum ChatWindowGeometry {
     }
 
     static func dockingSide(
-        floatingFrame: CGRect,
+        dropLocation: CGPoint,
         visibleScreenFrame: CGRect,
         threshold: CGFloat = dockingThreshold
     ) -> ChatWindowDockSide? {
-        if floatingFrame.minX <= visibleScreenFrame.minX + threshold {
+        if dropLocation.x <= visibleScreenFrame.minX + threshold {
             return .left
         }
-        if floatingFrame.maxX >= visibleScreenFrame.maxX - threshold {
+        if dropLocation.x >= visibleScreenFrame.maxX - threshold {
             return .right
         }
         return nil
@@ -873,6 +873,8 @@ private final class ChatPanelWindow: NSPanel {
         backgroundColor = .clear
         level = .screenSaver
         ignoresMouseEvents = false
+        isMovable = true
+        isMovableByWindowBackground = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         isReleasedWhenClosed = false
         hasShadow = false
@@ -1156,8 +1158,8 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
             onMinimize: { [weak self] in
                 self?.detachChatSidebar()
             },
-            onWindowDragEnded: { [weak self] in
-                self?.finishChatWindowMove()
+            onWindowDragEnded: { [weak self] dropLocation in
+                self?.finishChatWindowMove(dropLocation: dropLocation)
             },
             onClose: { [weak companionManager] in
                 companionManager?.closeChatSidebar()
@@ -1271,7 +1273,7 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
     private func detachChatSidebar() {
         guard let window = chatSidebarWindow,
               let windowViewState = chatWindowViewState,
-              case .docked(let dockSide) = windowViewState.presentationMode,
+              case .docked = windowViewState.presentationMode,
               let screen = window.screen
         else {
             return
@@ -1283,12 +1285,10 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
             ChatWindowGeometry.defaultFloatingHeight,
             visibleScreenFrame.height
         )
-        let floatingOriginX = dockSide == .left
-            ? visibleScreenFrame.minX + 24
-            : visibleScreenFrame.maxX - floatingWidth - 24
+        let floatingOriginX = visibleScreenFrame.midX - (floatingWidth / 2)
         let proposedFloatingFrame = NSRect(
             x: floatingOriginX,
-            y: visibleScreenFrame.maxY - floatingHeight - 36,
+            y: visibleScreenFrame.midY - (floatingHeight / 2),
             width: floatingWidth,
             height: floatingHeight
         )
@@ -1401,35 +1401,28 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
         case .docked(let dockSide):
             dockChatSidebar(to: dockSide, on: screen, animated: false)
         case .floating:
-            let clampedFrame = ChatWindowGeometry.clampedFloatingFrame(
-                floatingFrame: window.frame,
-                visibleScreenFrame: screen.visibleFrame
-            )
-            window.setFrame(clampedFrame, display: true)
+            break
         }
     }
 
-    private func finishChatWindowMove() {
+    private func finishChatWindowMove(dropLocation: CGPoint) {
         guard let window = chatSidebarWindow,
-              chatWindowViewState?.presentationMode == .floating,
-              let screen = window.screen
+              chatWindowViewState?.presentationMode == .floating
         else {
             return
         }
 
-        if let dockSide = ChatWindowGeometry.dockingSide(
-            floatingFrame: window.frame,
-            visibleScreenFrame: screen.visibleFrame
-        ) {
-            dockChatSidebar(to: dockSide, on: screen, animated: true)
-            return
-        }
+        let dropScreen = NSScreen.screens.first {
+            $0.frame.contains(dropLocation)
+        } ?? window.screen
+        guard let dropScreen else { return }
 
-        let clampedFrame = ChatWindowGeometry.clampedFloatingFrame(
-            floatingFrame: window.frame,
-            visibleScreenFrame: screen.visibleFrame
-        )
-        window.setFrame(clampedFrame, display: true)
+        if let dockSide = ChatWindowGeometry.dockingSide(
+            dropLocation: dropLocation,
+            visibleScreenFrame: dropScreen.visibleFrame
+        ) {
+            dockChatSidebar(to: dockSide, on: dropScreen, animated: true)
+        }
     }
 
     func hideOverlay() {

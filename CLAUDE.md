@@ -12,7 +12,7 @@ macOS menu bar companion app. Lives entirely in the macOS status bar (no dock ic
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: Multi-provider support via `AIProvider` protocol. Anthropic (Claude Sonnet 4.6 default), OpenAI (GPT-5.4 via Responses API), Ollama Local (auto-detected models), and Ollama Cloud (qwen3-vl). User provides their own API key per provider, stored in Keychain. Provider selection and model managed by `ProviderManager`.
+- **AI Chat**: Multi-provider support via `AIProvider` protocol. Anthropic (Claude Sonnet 4.6 default), OpenAI (GPT-5.6 Luna and Terra via Responses API), Ollama Local (auto-detected models), and Ollama Cloud (qwen3-vl). User provides their own API key per provider, stored in Keychain. Provider selection and model managed by `ProviderManager`.
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
@@ -28,7 +28,7 @@ macOS menu bar companion app. Lives entirely in the macOS status bar (no dock ic
 
 **Transient Cursor Mode**: When stealth mode is on, pressing the hotkey fades in the cursor overlay for the duration of the interaction (screenshot → question → response → optional pointing), then fades it out automatically after 1 second of inactivity.
 
-**Context Profiles**: Users create named context profiles via the config panel that customize Sato's behavior. Each profile contains plain-English instructions injected into the system prompt. Profiles can optionally override the global provider and model (e.g. use GPT-5.4 Nano for a "Quick Review" profile while defaulting to Anthropic globally). Profiles are stored as JSON in `~/Library/Application Support/Sato/profiles.json` and persist across app restarts. Only one profile can be active at a time. Managed by `ContextManager.swift`.
+**Context Profiles**: Users create named context profiles via the config panel that customize Sato's behavior. Each profile contains plain-English instructions injected into the system prompt. Profiles can optionally override the global provider and model. Profiles are stored as JSON in `~/Library/Application Support/Sato/profiles.json` and persist across app restarts. Only one profile can be active at a time. Managed by `ContextManager.swift`.
 
 **Conversation History**: Each initial screenshot question creates a separate persisted thread. `ConversationStore` keeps JSON message metadata and separate JPEG screenshot files under `~/Library/Application Support/Sato/`, retaining the five most recent unpinned conversations plus all pinned conversations. The chat window can detach into a movable, resizable compact panel and dock to either display edge.
 
@@ -57,7 +57,7 @@ macOS menu bar companion app. Lives entirely in the macOS status bar (no dock ic
 | `AIProviders/AIProvider.swift` | ~40 | Unified protocol for all AI providers. Defines `AIProviderChunk`, `AIProviderMessage`, and the `AIProvider` protocol with `streamChat()`. |
 | `AIProviders/AIProviderError.swift` | ~45 | Shared error types for all providers with provider-specific guidance messages. |
 | `AIProviders/AnthropicProvider.swift` | ~140 | Anthropic Claude API implementation. SSE streaming, vision support, models: Opus 4.7, Sonnet 4.6, Haiku 4.5. |
-| `AIProviders/OpenAIProvider.swift` | ~155 | OpenAI Responses API (`/v1/responses`) implementation. SSE streaming, vision via base64 data URLs, models: GPT-5.4, GPT-5.4 Mini, GPT-5.4 Nano. |
+| `AIProviders/OpenAIProvider.swift` | ~165 | OpenAI Responses API (`/v1/responses`) implementation. SSE streaming, vision via base64 data URLs, models: GPT-5.6 Luna and GPT-5.6 Terra. |
 | `AIProviders/OllamaLocalProvider.swift` | ~175 | Local Ollama daemon (`localhost:11434`) implementation. NDJSON streaming, dynamic model discovery via `/api/tags`, vision detection via `/api/show`. |
 | `AIProviders/OllamaCloudProvider.swift` | ~120 | Ollama Cloud (`ollama.com`) implementation. NDJSON streaming with Bearer auth. Single model for v1.1.0: `qwen3-vl-cloud`. |
 | `AIProviders/ProviderManager.swift` | ~135 | Centralized singleton managing active provider/model selection, UserDefaults persistence, Ollama discovery, context profile override resolution, and the unified `streamChat()` helper. |
