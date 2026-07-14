@@ -49,12 +49,12 @@ struct SpeechBubbleView: View {
                         Group {
                             if isStreaming {
                                 Text(responseText)
+                                    .font(.system(size: 13))
+                                    .foregroundColor(DS.Colors.textPrimary)
                             } else {
                                 Text(MarkdownRenderer.render(responseText))
                             }
                         }
-                            .font(.system(size: 13))
-                            .foregroundColor(DS.Colors.textPrimary)
                             .textSelection(.enabled)
                             .background(
                                 GeometryReader { geometry in
