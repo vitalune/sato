@@ -199,12 +199,12 @@ struct ChatSidebarView: View {
                     Group {
                         if isAssistantMessageCurrentlyStreaming(message: latestAssistantMessage) {
                             Text(latestAssistantMessage.text)
+                                .font(.system(size: 13))
+                                .foregroundColor(DS.Colors.textPrimary)
                         } else {
                             Text(MarkdownRenderer.render(latestAssistantMessage.text))
                         }
                     }
-                    .font(.system(size: 13))
-                    .foregroundColor(DS.Colors.textPrimary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -244,10 +244,10 @@ struct ChatSidebarView: View {
                         Text(MarkdownRenderer.render(message.text))
                     } else {
                         Text(message.text)
+                            .font(.system(size: 13))
+                            .foregroundColor(message.role == .user ? .white : DS.Colors.textPrimary)
                     }
                 }
-                    .font(.system(size: 13))
-                    .foregroundColor(message.role == .user ? .white : DS.Colors.textPrimary)
                     .textSelection(.enabled)
                     .lineLimit(nil)
                     .fixedSize(horizontal: false, vertical: true)
