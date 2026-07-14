@@ -1,30 +1,134 @@
 import Foundation
 import SwiftUI
 
-/// Renders completed assistant responses as styled markdown.
-/// Streaming responses stay plain text; call sites switch to this once a turn finishes.
+/// Parses assistant response text into display-safe blocks and styled inline markdown.
+/// SwiftUI `Text` does not reliably render Foundation's block-level markdown intents,
+/// so headers, lists, and code blocks are represented explicitly by `MarkdownResponseView`.
 enum MarkdownRenderer {
-    /// Body text size used by chat bubbles and the speech bubble.
     private static let bodyFontSize: CGFloat = 13
     private static let inlineCodeBackground = Color(red: 0.18, green: 0.22, blue: 0.30).opacity(0.55)
 
-    static func render(_ rawMarkdown: String) -> AttributedString {
+    enum Block {
+        case heading(level: Int, text: String)
+        case paragraph(String)
+        case unorderedListItem(indentLevel: Int, text: String)
+        case orderedListItem(indentLevel: Int, number: String, text: String)
+        case codeBlock(String)
+        case blockQuote(String)
+        case horizontalRule
+    }
+
+    static func blocks(for rawMarkdown: String) -> [Block] {
         let displayMarkdown = preprocessForDisplay(rawMarkdown)
+        var blocks: [Block] = []
+        var paragraphLines: [String] = []
+        var codeBlockLines: [String] = []
+        var isInsideCodeBlock = false
+
+        func appendParagraphIfNeeded() {
+            guard !paragraphLines.isEmpty else { return }
+            let paragraphText = paragraphLines
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .joined(separator: " ")
+            blocks.append(.paragraph(paragraphText))
+            paragraphLines.removeAll()
+        }
+
+        func appendCodeBlockIfNeeded() {
+            guard !codeBlockLines.isEmpty else { return }
+            blocks.append(.codeBlock(codeBlockLines.joined(separator: "\n")))
+            codeBlockLines.removeAll()
+        }
+
+        for line in displayMarkdown.components(separatedBy: .newlines) {
+            let trimmedLine = line.trimmingCharacters(in: .whitespaces)
+
+            if trimmedLine.hasPrefix("```") {
+                appendParagraphIfNeeded()
+                if isInsideCodeBlock {
+                    appendCodeBlockIfNeeded()
+                }
+                isInsideCodeBlock.toggle()
+                continue
+            }
+
+            if isInsideCodeBlock {
+                codeBlockLines.append(line)
+                continue
+            }
+
+            if trimmedLine.isEmpty {
+                appendParagraphIfNeeded()
+                continue
+            }
+
+            if let heading = heading(in: line) {
+                appendParagraphIfNeeded()
+                blocks.append(.heading(level: heading.level, text: heading.text))
+                continue
+            }
+
+            if isHorizontalRule(trimmedLine) {
+                appendParagraphIfNeeded()
+                blocks.append(.horizontalRule)
+                continue
+            }
+
+            if let listItem = listItem(in: line) {
+                appendParagraphIfNeeded()
+                switch listItem.style {
+                case .unordered:
+                    blocks.append(
+                        .unorderedListItem(
+                            indentLevel: listItem.indentLevel,
+                            text: listItem.text
+                        )
+                    )
+                case .ordered(let number):
+                    blocks.append(
+                        .orderedListItem(
+                            indentLevel: listItem.indentLevel,
+                            number: number,
+                            text: listItem.text
+                        )
+                    )
+                }
+                continue
+            }
+
+            if trimmedLine.hasPrefix(">") {
+                appendParagraphIfNeeded()
+                let quoteText = trimmedLine
+                    .dropFirst()
+                    .trimmingCharacters(in: .whitespaces)
+                blocks.append(.blockQuote(String(quoteText)))
+                continue
+            }
+
+            paragraphLines.append(line)
+        }
+
+        appendParagraphIfNeeded()
+        appendCodeBlockIfNeeded()
+        return blocks
+    }
+
+    static func renderInline(_ rawMarkdown: String) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(
             allowsExtendedAttributes: true,
-            interpretedSyntax: .full,
+            interpretedSyntax: .inlineOnlyPreservingWhitespace,
             failurePolicy: .returnPartiallyParsedIfPossible
         )
 
         do {
             var attributedString = try AttributedString(
-                markdown: displayMarkdown,
+                markdown: rawMarkdown,
                 options: options
             )
-            applyPresentationStyles(to: &attributedString)
+            styleInlineCode(in: &attributedString)
             return attributedString
         } catch {
-            return AttributedString(displayMarkdown)
+            return AttributedString(rawMarkdown)
         }
     }
 
@@ -46,6 +150,76 @@ enum MarkdownRenderer {
     private static func normalizeLineEndings(_ text: String) -> String {
         text.replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
+    }
+
+    private static func heading(in line: String) -> (level: Int, text: String)? {
+        let trimmedLine = line.trimmingCharacters(in: .whitespaces)
+        let headingCharacters = trimmedLine.prefix { $0 == "#" }
+        let headingLevel = headingCharacters.count
+        guard (1...6).contains(headingLevel) else { return nil }
+
+        let remainingText = trimmedLine.dropFirst(headingLevel)
+        guard remainingText.first?.isWhitespace == true else { return nil }
+
+        let title = remainingText
+            .trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+            .trimmingCharacters(in: .whitespaces)
+        guard !title.isEmpty else { return nil }
+        return (headingLevel, title)
+    }
+
+    private static func isHorizontalRule(_ trimmedLine: String) -> Bool {
+        let ruleCharacter = trimmedLine.first
+        guard let ruleCharacter,
+              ruleCharacter == "-" || ruleCharacter == "*" || ruleCharacter == "_"
+        else {
+            return false
+        }
+
+        return trimmedLine.count >= 3 && trimmedLine.allSatisfy { $0 == ruleCharacter }
+    }
+
+    private enum ListStyle {
+        case unordered
+        case ordered(number: String)
+    }
+
+    private static func listItem(
+        in line: String
+    ) -> (indentLevel: Int, style: ListStyle, text: String)? {
+        let leadingWhitespaceCount = line.prefix { $0 == " " || $0 == "\t" }.count
+        let indentationLevel = leadingWhitespaceCount / 2
+        let content = line.dropFirst(leadingWhitespaceCount)
+
+        if let firstCharacter = content.first,
+           (firstCharacter == "-" || firstCharacter == "*" || firstCharacter == "+"),
+           content.dropFirst().first?.isWhitespace == true {
+            return (
+                indentationLevel,
+                .unordered,
+                String(content.dropFirst().trimmingCharacters(in: .whitespaces))
+            )
+        }
+
+        let numberCharacters = content.prefix { $0.isNumber }
+        guard !numberCharacters.isEmpty,
+              let delimiter = content.dropFirst(numberCharacters.count).first,
+              delimiter == "." || delimiter == ")",
+              content.dropFirst(numberCharacters.count + 1).first?.isWhitespace == true
+        else {
+            return nil
+        }
+
+        return (
+            indentationLevel,
+            .ordered(number: String(numberCharacters)),
+            String(
+                content
+                    .dropFirst(numberCharacters.count + 1)
+                    .trimmingCharacters(in: .whitespaces)
+            )
+        )
     }
 
     /// Turns `$$...$$` and `\[...\]` display math into readable inline-code lines.
@@ -320,70 +494,14 @@ enum MarkdownRenderer {
         return result
     }
 
-    // MARK: - Styling
-
-    private static func applyPresentationStyles(to attributedString: inout AttributedString) {
-        // Base body styling for runs that markdown did not already specialize.
-        attributedString.font = .system(size: bodyFontSize)
-        attributedString.foregroundColor = DS.Colors.textPrimary
-
+    private static func styleInlineCode(in attributedString: inout AttributedString) {
         for run in attributedString.runs {
             let range = run.range
-
             if run.inlinePresentationIntent?.contains(.code) == true {
                 attributedString[range].font = .system(size: bodyFontSize - 1, design: .monospaced)
                 attributedString[range].foregroundColor = DS.Colors.codeText
                 attributedString[range].backgroundColor = inlineCodeBackground
             }
-
-            if let presentationIntent = run.presentationIntent {
-                for component in presentationIntent.components {
-                    switch component.kind {
-                    case .header(let level):
-                        attributedString[range].font = headingFont(for: level)
-                        attributedString[range].foregroundColor = DS.Colors.textPrimary
-                    case .codeBlock:
-                        attributedString[range].font = .system(
-                            size: bodyFontSize - 1,
-                            design: .monospaced
-                        )
-                        attributedString[range].foregroundColor = DS.Colors.codeText
-                    case .blockQuote:
-                        attributedString[range].foregroundColor = DS.Colors.textSecondary
-                        attributedString[range].font = .system(
-                            size: bodyFontSize,
-                            weight: .regular,
-                            design: .default
-                        ).italic()
-                    default:
-                        break
-                    }
-                }
-            }
-
-            if run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true {
-                // Preserve heading weight when bold appears inside a header.
-                let isInsideHeader = run.presentationIntent?.components.contains(where: {
-                    if case .header = $0.kind { return true }
-                    return false
-                }) == true
-                if !isInsideHeader {
-                    attributedString[range].font = .system(size: bodyFontSize, weight: .semibold)
-                }
-            }
-        }
-    }
-
-    private static func headingFont(for level: Int) -> Font {
-        switch level {
-        case 1:
-            return .system(size: 18, weight: .bold)
-        case 2:
-            return .system(size: 16, weight: .bold)
-        case 3:
-            return .system(size: 14, weight: .semibold)
-        default:
-            return .system(size: bodyFontSize, weight: .semibold)
         }
     }
 }

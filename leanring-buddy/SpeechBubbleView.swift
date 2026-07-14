@@ -52,7 +52,7 @@ struct SpeechBubbleView: View {
                                     .font(.system(size: 13))
                                     .foregroundColor(DS.Colors.textPrimary)
                             } else {
-                                Text(MarkdownRenderer.render(responseText))
+                                MarkdownResponseView(markdown: responseText)
                             }
                         }
                             .textSelection(.enabled)
