@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleShortVersionString</key>
-	<string>1.2.1</string>
+	<string>1.2.2</string>
 	<key>CFBundleVersion</key>
-	<string>10201</string>
+	<string>10202</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>Sato needs screen recording access to see your screen and help you.</string>
 	<key>SUAutomaticallyUpdate</key>

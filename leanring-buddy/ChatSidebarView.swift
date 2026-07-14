@@ -202,7 +202,7 @@ struct ChatSidebarView: View {
                                 .font(.system(size: 13))
                                 .foregroundColor(DS.Colors.textPrimary)
                         } else {
-                            Text(MarkdownRenderer.render(latestAssistantMessage.text))
+                            MarkdownResponseView(markdown: latestAssistantMessage.text)
                         }
                     }
                     .textSelection(.enabled)
@@ -241,7 +241,7 @@ struct ChatSidebarView: View {
             if !message.text.isEmpty {
                 Group {
                     if message.role == .assistant && !isAssistantMessageCurrentlyStreaming(message: message) {
-                        Text(MarkdownRenderer.render(message.text))
+                        MarkdownResponseView(markdown: message.text)
                     } else {
                         Text(message.text)
                             .font(.system(size: 13))

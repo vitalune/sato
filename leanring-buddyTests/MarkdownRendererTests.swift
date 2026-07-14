@@ -53,15 +53,76 @@ struct MarkdownRendererTests {
     }
 
     @Test
-    func renderParsesHeadingsAndEmphasis() throws {
-        let attributedString = MarkdownRenderer.render(
-            "## Title\n\nThis has **bold** and `code`."
+    func blocksPreserveHeadersParagraphsAndListMarkers() {
+        let markdown = """
+        ## Step by step
+
+        A release candidate was prepared.
+
+        - The version was verified.
+        - All tests passed.
+
+        1. Publish the release.
+        2. Deploy the appcast.
+        """
+
+        let blocks = MarkdownRenderer.blocks(for: markdown)
+        let blockDescriptions = blocks.map { block -> String in
+            switch block {
+            case .heading(let level, let text):
+                return "heading:\(level):\(text)"
+            case .paragraph(let text):
+                return "paragraph:\(text)"
+            case .unorderedListItem(let indentLevel, let text):
+                return "bullet:\(indentLevel):\(text)"
+            case .orderedListItem(let indentLevel, let number, let text):
+                return "number:\(indentLevel):\(number):\(text)"
+            case .codeBlock(let text):
+                return "code:\(text)"
+            case .blockQuote(let text):
+                return "quote:\(text)"
+            case .horizontalRule:
+                return "rule"
+            }
+        }
+
+        #expect(blockDescriptions == [
+            "heading:2:Step by step",
+            "paragraph:A release candidate was prepared.",
+            "bullet:0:The version was verified.",
+            "bullet:0:All tests passed.",
+            "number:0:1:Publish the release.",
+            "number:0:2:Deploy the appcast."
+        ])
+    }
+
+    @Test
+    func blocksKeepFencedCodeTogether() {
+        let blocks = MarkdownRenderer.blocks(
+            """
+            Before.
+
+            ```swift
+            let releaseVersion = "1.2.2"
+            ```
+
+            After.
+            """
         )
+
+        #expect(blocks.count == 3)
+        guard case .codeBlock(let code) = blocks[1] else {
+            Issue.record("Expected fenced content to be one code block.")
+            return
+        }
+        #expect(code == #"let releaseVersion = "1.2.2""#)
+    }
+
+    @Test
+    func renderInlineParsesEmphasisAndCode() {
+        let attributedString = MarkdownRenderer.renderInline("This has **bold** and `code`.")
         let plainText = String(attributedString.characters)
-        #expect(plainText.contains("Title"))
-        #expect(plainText.contains("bold"))
-        #expect(plainText.contains("code"))
-        #expect(!plainText.contains("##"))
-        #expect(!plainText.contains("**"))
+
+        #expect(plainText == "This has bold and code.")
     }
 }

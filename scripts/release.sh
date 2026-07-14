@@ -234,12 +234,9 @@ cat > "$RELEASE_NOTES_PATH" <<EOF
 
 ## What's new
 
-- Detach chat into a movable, resizable floating window.
-- Dock chat to either side of any connected display.
-- Resize docked chat with responsive message and Markdown wrapping.
-- Reopen the five most recent conversations from the menu bar.
-- Pin important conversations so they persist beyond the recent-history limit.
-- Choose GPT-5.6 Luna or GPT-5.6 Terra as the OpenAI model.
+- Render completed answers with explicit Markdown layout for headers, paragraphs,
+  bullets, numbered steps, block quotes, and code blocks.
+- Preserve readable LaTeX-style math and chemistry formulas in completed answers.
 EOF
 
 DMG_SIZE=$(stat -f%z "$DMG_PATH")
