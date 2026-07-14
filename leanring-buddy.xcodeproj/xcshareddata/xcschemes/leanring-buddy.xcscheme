@@ -16,7 +16,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "28F22CBE2F56440300A0FC59"
-               BuildableName = "Clicky.app"
+               BuildableName = "Sato.app"
                BlueprintName = "leanring-buddy"
                ReferencedContainer = "container:leanring-buddy.xcodeproj">
             </BuildableReference>
@@ -70,7 +70,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "28F22CBE2F56440300A0FC59"
-            BuildableName = "Clicky.app"
+            BuildableName = "Sato.app"
             BlueprintName = "leanring-buddy"
             ReferencedContainer = "container:leanring-buddy.xcodeproj">
          </BuildableReference>
@@ -87,7 +87,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "28F22CBE2F56440300A0FC59"
-            BuildableName = "Clicky.app"
+            BuildableName = "Sato.app"
             BlueprintName = "leanring-buddy"
             ReferencedContainer = "container:leanring-buddy.xcodeproj">
          </BuildableReference>
