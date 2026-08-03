@@ -234,9 +234,10 @@ cat > "$RELEASE_NOTES_PATH" <<EOF
 
 ## What's new
 
-- Render completed answers with explicit Markdown layout for headers, paragraphs,
-  bullets, numbered steps, block quotes, and code blocks.
-- Preserve readable LaTeX-style math and chemistry formulas in completed answers.
+- Press Ctrl+Option during an open chat to capture another screenshot for the next
+  follow-up turn in that same conversation.
+- Show follow-up screenshots in the sidebar chat history and send them with the
+  reply, while keeping earlier screenshots available in conversation context.
 EOF
 
 DMG_SIZE=$(stat -f%z "$DMG_PATH")

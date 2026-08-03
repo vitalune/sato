@@ -99,6 +99,11 @@ struct ChatSidebarView: View {
                 isInputFieldFocused = true
             }
         }
+        .onChange(of: companionManager.pendingFollowUpScreenshotData) { _, _ in
+            DispatchQueue.main.async {
+                isInputFieldFocused = true
+            }
+        }
     }
 
     // MARK: - Header
@@ -287,41 +292,95 @@ struct ChatSidebarView: View {
     // MARK: - Input Area
 
     private var chatInputArea: some View {
-        HStack(spacing: 8) {
-            TextField("Reply to Sato...", text: $followUpInputText, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.system(size: 13))
-                .foregroundColor(DS.Colors.textPrimary)
-                .lineLimit(1...4)
-                .fixedSize(horizontal: false, vertical: true)
-                .focused($isInputFieldFocused)
-                .onSubmit {
-                    submitFollowUp()
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.white.opacity(0.08))
+        VStack(alignment: .leading, spacing: 8) {
+            if let pendingFollowUpScreenshotData = companionManager.pendingFollowUpScreenshotData,
+               let pendingScreenshotImage = NSImage(data: pendingFollowUpScreenshotData) {
+                pendingFollowUpScreenshotPreview(pendingScreenshotImage)
+            }
+
+            HStack(spacing: 8) {
+                TextField(
+                    companionManager.pendingFollowUpScreenshotData == nil
+                        ? "Reply to Sato..."
+                        : "Ask about this screenshot...",
+                    text: $followUpInputText,
+                    axis: .vertical
                 )
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .foregroundColor(DS.Colors.textPrimary)
+                    .lineLimit(1...4)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .focused($isInputFieldFocused)
+                    .onSubmit {
+                        submitFollowUp()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.white.opacity(0.08))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                    )
+
+                Button(action: submitFollowUp) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 22))
+                        .foregroundColor(
+                            followUpInputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                ? DS.Colors.textTertiary
+                                : DS.Colors.accent
+                        )
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .disabled(followUpInputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || companionManager.chatSidebarIsStreaming)
+            }
+        }
+    }
+
+    private func pendingFollowUpScreenshotPreview(_ pendingScreenshotImage: NSImage) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(nsImage: pendingScreenshotImage)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: 120, maxHeight: 72)
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 1)
                 )
 
-            Button(action: submitFollowUp) {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 22))
-                    .foregroundColor(
-                        followUpInputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            ? DS.Colors.textTertiary
-                            : DS.Colors.accent
-                    )
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Screenshot attached")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(DS.Colors.textPrimary)
+                Text("Ctrl+Option captured this for your next reply.")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+
+            Spacer(minLength: 0)
+
+            Button {
+                companionManager.clearPendingFollowUpScreenshot()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 14))
+                    .foregroundColor(DS.Colors.textTertiary)
             }
             .buttonStyle(.plain)
             .pointerCursor()
-            .disabled(followUpInputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || companionManager.chatSidebarIsStreaming)
+            .help("Remove screenshot")
         }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(DS.Colors.surface2)
+        )
     }
 
     // MARK: - Helpers

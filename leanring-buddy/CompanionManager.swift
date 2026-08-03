@@ -84,6 +84,17 @@ final class CompanionManager: ObservableObject {
     /// The cropped screenshot JPEG data from the user's selection.
     @Published var assistCroppedImageData: Data?
 
+    /// Screenshot captured while an existing chat sidebar conversation is open.
+    /// Injected into the next follow-up turn once the user sends a reply.
+    @Published var pendingFollowUpScreenshotData: Data?
+
+    /// True while Ctrl+Option is capturing a screenshot for the open sidebar conversation.
+    private var isCapturingFollowUpScreenshot = false
+
+    /// Assist-screen frame to restore after a follow-up screenshot capture finishes,
+    /// so the open chat sidebar stays on its original display.
+    private var chatSidebarScreenFrameBeforeFollowUpCapture: CGRect?
+
     /// Claude's streaming response text, updated progressively.
     @Published var assistResponseText: String = ""
 
@@ -133,16 +144,21 @@ final class CompanionManager: ObservableObject {
         currentResponseTask = nil
         NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
 
-        let screenshotData = conversationStore.screenshotData(conversationID: conversationID)
-        chatSidebarMessages = conversation.messages.enumerated().map { messageIndex, message in
-            let messageImageData = messageIndex == 0 && message.role == .user
-                ? screenshotData
-                : nil
+        chatSidebarMessages = conversation.messages.map { message in
+            let messageImageData = conversationStore.screenshotData(
+                conversationID: conversationID,
+                messageID: message.id
+            )
             return message.chatSidebarMessage(imageData: messageImageData)
         }
         activeConversationID = conversationID
         conversationStore.setProtectedConversation(conversationID: conversationID)
-        assistCroppedImageData = screenshotData
+        assistCroppedImageData = chatSidebarMessages.first(where: {
+            $0.role == .user && $0.imageData != nil
+        })?.imageData
+        pendingFollowUpScreenshotData = nil
+        isCapturingFollowUpScreenshot = false
+        chatSidebarScreenFrameBeforeFollowUpCapture = nil
         assistResponseText = ""
         assistResponseIsStreaming = false
         chatSidebarIsStreaming = false
@@ -171,8 +187,9 @@ final class CompanionManager: ObservableObject {
         )
     }
 
-    /// Sends a follow-up message from the chat sidebar. Uses the original screenshot
-    /// context from conversation history — no new screenshot required.
+    /// Sends a follow-up message from the chat sidebar.
+    /// Reuses prior screenshot context from conversation history, and attaches any
+    /// pending follow-up screenshot captured with Ctrl+Option while the sidebar is open.
     func sendChatSidebarFollowUp(messageText: String) {
         let trimmedText = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty,
@@ -182,18 +199,21 @@ final class CompanionManager: ObservableObject {
         }
 
         let previousConversationMessages = chatSidebarMessages
+        let followUpScreenshotData = pendingFollowUpScreenshotData
+        pendingFollowUpScreenshotData = nil
 
         // Add user message to sidebar
         let userMessage = ChatSidebarMessage(
             role: .user,
             text: trimmedText,
-            imageData: nil,
+            imageData: followUpScreenshotData,
             timestamp: Date()
         )
         chatSidebarMessages.append(userMessage)
         conversationStore.appendMessage(
             conversationID: activeConversationID,
-            message: userMessage
+            message: userMessage,
+            screenshotData: followUpScreenshotData
         )
 
         // Add placeholder assistant message that will be streamed into
@@ -217,7 +237,7 @@ final class CompanionManager: ObservableObject {
                 let systemPrompt = self.buildTextModeSystemPrompt()
 
                 let messages = self.buildProviderMessages(
-                    imageData: assistCroppedImageData,
+                    imageData: followUpScreenshotData,
                     conversationMessages: previousConversationMessages,
                     currentUserPrompt: trimmedText
                 )
@@ -277,6 +297,11 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    /// Removes a pending follow-up screenshot without sending a message.
+    func clearPendingFollowUpScreenshot() {
+        pendingFollowUpScreenshotData = nil
+    }
+
     /// Closes the chat sidebar and returns the sprite to patrol.
     func closeChatSidebar() {
         assistFlowPhase = .inactive
@@ -286,6 +311,9 @@ final class CompanionManager: ObservableObject {
         conversationStore.setProtectedConversation(conversationID: nil)
         assistResponseText = ""
         assistResponseIsStreaming = false
+        pendingFollowUpScreenshotData = nil
+        isCapturingFollowUpScreenshot = false
+        chatSidebarScreenFrameBeforeFollowUpCapture = nil
         // Keep assistCroppedImageData so conversation history retains screenshot context
         // until the next Ctrl+Option interaction
 
@@ -730,10 +758,11 @@ final class CompanionManager: ObservableObject {
     /// Starts the text-based assist flow.
     /// - Stealth mode OFF: sprite flies to cursor → bark → screenshot → text → response bubble → fly back
     /// - Stealth mode ON: screenshot selection appears immediately at cursor
+    /// - Chat sidebar open: capture a screenshot for the next follow-up turn in the active conversation
     private func handleAssistHotkey() {
-        // If the chat sidebar is open, close it and start fresh
         if assistFlowPhase == .chatSidebar {
-            closeChatSidebar()
+            startFollowUpScreenshotCapture()
+            return
         }
 
         guard assistFlowPhase == .inactive else {
@@ -782,23 +811,69 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    /// Captures a screenshot for the next turn while keeping the current sidebar conversation open.
+    private func startFollowUpScreenshotCapture() {
+        guard activeConversationID != nil else { return }
+        guard !chatSidebarIsStreaming else {
+            print("🐕 Assist: ignoring follow-up screenshot while sidebar is streaming")
+            return
+        }
+        guard !isCapturingFollowUpScreenshot else {
+            print("🐕 Assist: follow-up screenshot capture already in progress")
+            return
+        }
+
+        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+        clearDetectedElementLocation()
+
+        let cursorScreenPosition = NSEvent.mouseLocation
+        let cursorScreen = NSScreen.screens.first(where: { $0.frame.contains(cursorScreenPosition) }) ?? NSScreen.main
+        guard let screenFrame = cursorScreen?.frame else { return }
+
+        // Keep the chat on its current display; temporarily retarget assist frame
+        // so screenshot selection appears on the cursor's screen.
+        chatSidebarScreenFrameBeforeFollowUpCapture = assistScreenFrame
+        assistScreenFrame = screenFrame
+
+        if !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+
+        isCapturingFollowUpScreenshot = true
+        captureScreenshotForSelectionOverlay()
+    }
+
+    private func restoreChatSidebarScreenFrameAfterFollowUpCaptureIfNeeded() {
+        guard let chatSidebarScreenFrameBeforeFollowUpCapture else { return }
+        assistScreenFrame = chatSidebarScreenFrameBeforeFollowUpCapture
+        self.chatSidebarScreenFrameBeforeFollowUpCapture = nil
+    }
+
     /// Called when the sprite arrives at cursor and starts barking (assistingAtCursor).
     /// Captures the screen and shows the screenshot selection overlay.
     func startScreenshotSelectionAfterBark() {
         guard assistFlowPhase == .inactive else { return }
+        captureScreenshotForSelectionOverlay()
+    }
 
+    /// Captures the cursor screen and transitions into screenshot selection.
+    private func captureScreenshotForSelectionOverlay() {
         Task {
             do {
                 // Capture just the cursor screen for the selection overlay
                 let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
                 guard let cursorScreenCapture = screenCaptures.first(where: { $0.isCursorScreen }) else {
                     print("⚠️ Assist: no cursor screen capture")
+                    cancelScreenshotSelection()
                     return
                 }
 
                 // Convert JPEG data to NSImage for the selection overlay
                 guard let screenshotNSImage = NSImage(data: cursorScreenCapture.imageData) else {
                     print("⚠️ Assist: failed to create NSImage from capture")
+                    cancelScreenshotSelection()
                     return
                 }
 
@@ -807,17 +882,42 @@ final class CompanionManager: ObservableObject {
                 print("📸 Assist: screenshot captured, showing selection overlay")
             } catch {
                 print("⚠️ Assist: screenshot capture failed: \(error)")
-                cancelAssistFlow()
+                cancelScreenshotSelection()
             }
         }
     }
 
     /// Called when the user confirms a screenshot selection region.
     func handleScreenshotSelectionConfirmed(croppedImageData: Data, selectionRect: CGRect) {
-        assistCroppedImageData = croppedImageData
         assistScreenshotImage = nil
+
+        if isCapturingFollowUpScreenshot, activeConversationID != nil {
+            pendingFollowUpScreenshotData = croppedImageData
+            isCapturingFollowUpScreenshot = false
+            restoreChatSidebarScreenFrameAfterFollowUpCaptureIfNeeded()
+            assistFlowPhase = .chatSidebar
+            print("✂️ Assist: follow-up screenshot ready (\(Int(selectionRect.width))×\(Int(selectionRect.height)))")
+            return
+        }
+
+        assistCroppedImageData = croppedImageData
         assistFlowPhase = .typingQuestion
         print("✂️ Assist: selection confirmed (\(Int(selectionRect.width))×\(Int(selectionRect.height))), showing text input")
+    }
+
+    /// Cancels screenshot selection. Follow-up captures return to the open sidebar
+    /// conversation instead of tearing down the active chat.
+    func cancelScreenshotSelection() {
+        if isCapturingFollowUpScreenshot {
+            isCapturingFollowUpScreenshot = false
+            assistScreenshotImage = nil
+            restoreChatSidebarScreenFrameAfterFollowUpCaptureIfNeeded()
+            assistFlowPhase = .chatSidebar
+            print("✂️ Assist: follow-up screenshot capture cancelled")
+            return
+        }
+
+        cancelAssistFlow()
     }
 
     /// Called when the user submits their text question.
@@ -937,6 +1037,9 @@ final class CompanionManager: ObservableObject {
         assistResponseIsStreaming = false
         assistCroppedImageData = nil
         assistScreenshotImage = nil
+        pendingFollowUpScreenshotData = nil
+        isCapturingFollowUpScreenshot = false
+        chatSidebarScreenFrameBeforeFollowUpCapture = nil
         chatSidebarMessages = []
         chatSidebarIsStreaming = false
         activeConversationID = nil
@@ -965,6 +1068,9 @@ final class CompanionManager: ObservableObject {
         assistResponseIsStreaming = false
         assistCroppedImageData = nil
         assistScreenshotImage = nil
+        pendingFollowUpScreenshotData = nil
+        isCapturingFollowUpScreenshot = false
+        chatSidebarScreenFrameBeforeFollowUpCapture = nil
         chatSidebarMessages = []
         chatSidebarIsStreaming = false
         activeConversationID = nil
@@ -1017,7 +1123,7 @@ final class CompanionManager: ObservableObject {
 
     Your replies render in a small speech bubble above the user's sprite, so keep responses concise and skimmable. Aim for under 150 words unless the user explicitly asks for more detail or depth. Favor direct answers over preamble. Skip phrases like "I can see that..." or "Looking at your screen..." — just answer.
 
-    When the user asks a follow-up in the chat sidebar, you have access to the full conversation history, including the original screenshot. Build on that context naturally instead of treating each message as a fresh start.
+    When the user asks a follow-up in the chat sidebar, you have access to the full conversation history, including any screenshots attached to earlier turns and any new screenshot attached to the latest turn. Build on that context naturally instead of treating each message as a fresh start.
 
     If the user has set an active Context Profile (provided below), that describes how they want you to behave for this session. Follow it.
     """
@@ -1055,6 +1161,8 @@ final class CompanionManager: ObservableObject {
 
     /// Converts the active conversation and current user prompt into the
     /// unified AIProviderMessage array expected by all providers.
+    /// Historical turns keep any attached screenshots so follow-ups can reference
+    /// earlier images without reattaching them to the latest prompt.
     private func buildProviderMessages(
         imageData: Data?,
         conversationMessages: [ChatSidebarMessage],
@@ -1066,11 +1174,12 @@ final class CompanionManager: ObservableObject {
             let providerRole: AIProviderMessage.Role = conversationMessage.role == .user
                 ? .user
                 : .assistant
+            let historicalImages = conversationMessage.imageData.map { [$0] }
             messages.append(
                 AIProviderMessage(
                     role: providerRole,
                     text: conversationMessage.text,
-                    images: nil
+                    images: historicalImages
                 )
             )
         }

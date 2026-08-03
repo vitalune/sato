@@ -129,6 +129,61 @@ struct ConversationStoreTests {
     }
 
     @Test
+    func followUpScreenshotsPersistPerMessage() throws {
+        let storageDirectoryURL = temporaryStorageDirectoryURL()
+        defer { try? FileManager.default.removeItem(at: storageDirectoryURL) }
+        let conversationStore = ConversationStore(
+            storageDirectoryURL: storageDirectoryURL
+        )
+        let initialUserMessage = userMessage(
+            text: "First question",
+            timestamp: Date(timeIntervalSince1970: 1)
+        )
+        let conversationID = conversationStore.createConversation(
+            userMessage: initialUserMessage,
+            screenshotData: Data([1, 1, 1])
+        )
+        conversationStore.appendMessage(
+            conversationID: conversationID,
+            message: assistantMessage(
+                text: "First answer",
+                timestamp: Date(timeIntervalSince1970: 2)
+            )
+        )
+
+        let followUpUserMessage = userMessage(
+            text: "Second question with a new screenshot",
+            timestamp: Date(timeIntervalSince1970: 3)
+        )
+        conversationStore.appendMessage(
+            conversationID: conversationID,
+            message: followUpUserMessage,
+            screenshotData: Data([2, 2, 2])
+        )
+
+        let reloadedConversationStore = ConversationStore(
+            storageDirectoryURL: storageDirectoryURL
+        )
+        #expect(
+            reloadedConversationStore.screenshotData(
+                conversationID: conversationID,
+                messageID: initialUserMessage.id
+            ) == Data([1, 1, 1])
+        )
+        #expect(
+            reloadedConversationStore.screenshotData(
+                conversationID: conversationID,
+                messageID: followUpUserMessage.id
+            ) == Data([2, 2, 2])
+        )
+        #expect(
+            reloadedConversationStore.conversation(
+                conversationID: conversationID
+            )?.messages.last?.screenshotFileName != nil
+        )
+    }
+
+    @Test
     func activeConversationIsProtectedWhenAnOldPinIsRemoved() throws {
         let storageDirectoryURL = temporaryStorageDirectoryURL()
         defer { try? FileManager.default.removeItem(at: storageDirectoryURL) }

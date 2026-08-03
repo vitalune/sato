@@ -14,24 +14,29 @@ struct SavedConversationMessage: Identifiable, Codable, Equatable {
     let role: ChatSidebarMessageRole
     var text: String
     let timestamp: Date
+    /// Optional screenshot file for this specific message turn.
+    var screenshotFileName: String?
 
     init(
         id: UUID = UUID(),
         role: ChatSidebarMessageRole,
         text: String,
-        timestamp: Date = Date()
+        timestamp: Date = Date(),
+        screenshotFileName: String? = nil
     ) {
         self.id = id
         self.role = role
         self.text = text
         self.timestamp = timestamp
+        self.screenshotFileName = screenshotFileName
     }
 
-    init(chatSidebarMessage: ChatSidebarMessage) {
+    init(chatSidebarMessage: ChatSidebarMessage, screenshotFileName: String? = nil) {
         id = chatSidebarMessage.id
         role = chatSidebarMessage.role
         text = chatSidebarMessage.text
         timestamp = chatSidebarMessage.timestamp
+        self.screenshotFileName = screenshotFileName
     }
 
     func chatSidebarMessage(imageData: Data? = nil) -> ChatSidebarMessage {
@@ -49,6 +54,8 @@ struct SavedConversation: Identifiable, Codable, Equatable {
     let id: UUID
     var title: String
     var messages: [SavedConversationMessage]
+    /// Legacy single-screenshot field kept for conversations created before
+    /// per-message screenshot filenames existed.
     var screenshotFileName: String?
     var isPinned: Bool
     let createdAt: Date
@@ -107,13 +114,17 @@ final class ConversationStore: ObservableObject {
         let conversationID = UUID()
         let screenshotFileName = saveScreenshot(
             screenshotData,
-            conversationID: conversationID
+            conversationID: conversationID,
+            messageID: userMessage.id
         )
         let conversation = SavedConversation(
             id: conversationID,
             title: Self.conversationTitle(from: userMessage.text),
             messages: [
-                SavedConversationMessage(chatSidebarMessage: userMessage)
+                SavedConversationMessage(
+                    chatSidebarMessage: userMessage,
+                    screenshotFileName: screenshotFileName
+                )
             ],
             screenshotFileName: screenshotFileName,
             isPinned: false,
@@ -129,14 +140,23 @@ final class ConversationStore: ObservableObject {
 
     func appendMessage(
         conversationID: UUID,
-        message: ChatSidebarMessage
+        message: ChatSidebarMessage,
+        screenshotData: Data? = nil
     ) {
         guard let conversationIndex = conversations.firstIndex(where: { $0.id == conversationID }) else {
             return
         }
 
+        let screenshotFileName = saveScreenshot(
+            screenshotData,
+            conversationID: conversationID,
+            messageID: message.id
+        )
         conversations[conversationIndex].messages.append(
-            SavedConversationMessage(chatSidebarMessage: message)
+            SavedConversationMessage(
+                chatSidebarMessage: message,
+                screenshotFileName: screenshotFileName
+            )
         )
         conversations[conversationIndex].updatedAt = max(
             conversations[conversationIndex].updatedAt,
@@ -150,15 +170,48 @@ final class ConversationStore: ObservableObject {
         conversations.first(where: { $0.id == conversationID })
     }
 
-    func screenshotData(conversationID: UUID) -> Data? {
+    /// Loads screenshot bytes for a message, falling back to the conversation's
+    /// legacy single screenshot for the first user message when needed.
+    func screenshotData(
+        conversationID: UUID,
+        messageID: UUID
+    ) -> Data? {
         guard let conversation = conversation(conversationID: conversationID),
-              let screenshotFileName = conversation.screenshotFileName
+              let message = conversation.messages.first(where: { $0.id == messageID })
         else {
             return nil
         }
 
-        let screenshotURL = screenshotsDirectoryURL.appendingPathComponent(screenshotFileName)
-        return try? Data(contentsOf: screenshotURL)
+        if let screenshotFileName = message.screenshotFileName {
+            return loadScreenshotData(fileName: screenshotFileName)
+        }
+
+        let isLegacyFirstUserMessage = message.role == .user
+            && conversation.messages.first?.id == messageID
+        if isLegacyFirstUserMessage {
+            return screenshotData(conversationID: conversationID)
+        }
+
+        return nil
+    }
+
+    func screenshotData(conversationID: UUID) -> Data? {
+        guard let conversation = conversation(conversationID: conversationID) else {
+            return nil
+        }
+
+        if let screenshotFileName = conversation.screenshotFileName {
+            return loadScreenshotData(fileName: screenshotFileName)
+        }
+
+        if let firstMessageScreenshotFileName = conversation.messages
+            .first(where: { $0.role == .user })?
+            .screenshotFileName
+        {
+            return loadScreenshotData(fileName: firstMessageScreenshotFileName)
+        }
+
+        return nil
     }
 
     func setConversationPinned(conversationID: UUID, isPinned: Bool) {
@@ -189,7 +242,7 @@ final class ConversationStore: ObservableObject {
         }
 
         let removedConversation = conversations.remove(at: conversationIndex)
-        deleteScreenshot(for: removedConversation)
+        deleteScreenshots(for: removedConversation)
         saveConversations()
     }
 
@@ -249,12 +302,16 @@ final class ConversationStore: ObservableObject {
         }
     }
 
-    private func saveScreenshot(_ screenshotData: Data?, conversationID: UUID) -> String? {
+    private func saveScreenshot(
+        _ screenshotData: Data?,
+        conversationID: UUID,
+        messageID: UUID
+    ) -> String? {
         guard let screenshotData else { return nil }
 
         do {
             try ensureStorageDirectoriesExist()
-            let screenshotFileName = "\(conversationID.uuidString).jpg"
+            let screenshotFileName = "\(conversationID.uuidString)-\(messageID.uuidString).jpg"
             let screenshotURL = screenshotsDirectoryURL.appendingPathComponent(screenshotFileName)
             try screenshotData.write(to: screenshotURL, options: .atomic)
             return screenshotFileName
@@ -262,6 +319,11 @@ final class ConversationStore: ObservableObject {
             print("⚠️ Sato: Failed to save conversation screenshot: \(error)")
             return nil
         }
+    }
+
+    private func loadScreenshotData(fileName: String) -> Data? {
+        let screenshotURL = screenshotsDirectoryURL.appendingPathComponent(fileName)
+        return try? Data(contentsOf: screenshotURL)
     }
 
     private func ensureStorageDirectoriesExist() throws {
@@ -307,14 +369,19 @@ final class ConversationStore: ObservableObject {
         conversations.removeAll {
             conversationIDsToRemove.contains($0.id)
         }
-        removedConversations.forEach(deleteScreenshot)
+        removedConversations.forEach(deleteScreenshots)
         return true
     }
 
-    private func deleteScreenshot(for conversation: SavedConversation) {
-        guard let screenshotFileName = conversation.screenshotFileName else { return }
+    private func deleteScreenshots(for conversation: SavedConversation) {
+        var screenshotFileNames = Set(conversation.messages.compactMap(\.screenshotFileName))
+        if let conversationScreenshotFileName = conversation.screenshotFileName {
+            screenshotFileNames.insert(conversationScreenshotFileName)
+        }
 
-        let screenshotURL = screenshotsDirectoryURL.appendingPathComponent(screenshotFileName)
-        try? fileManager.removeItem(at: screenshotURL)
+        for screenshotFileName in screenshotFileNames {
+            let screenshotURL = screenshotsDirectoryURL.appendingPathComponent(screenshotFileName)
+            try? fileManager.removeItem(at: screenshotURL)
+        }
     }
 }

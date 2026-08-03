@@ -549,13 +549,18 @@ struct BlueCursorView: View {
     /// Screenshot selection and text input use an InteractiveOverlayWindow because
     /// they need mouse/keyboard input, which the regular click-through overlay can't provide.
     private func handleAssistFlowPhaseChange(_ newPhase: AssistFlowPhase) {
-        // Chat is explicitly targeted to the assist screen, including when a
-        // saved conversation is opened from the menu on a different display.
-        if newPhase == .chatSidebar {
-            guard isThisScreenTheAssistScreen else { return }
+        // Chat and follow-up screenshot capture are targeted to the assist screen,
+        // including when a saved conversation is opened from the menu.
+        if newPhase == .chatSidebar || newPhase == .selectingScreenshot {
+            guard isThisScreenTheAssistScreen
+                    || spriteIsVisibleOnThisScreen
+                    || (companionManager.isStealthModeEnabled && isThisScreenTheAssistScreen)
+            else {
+                return
+            }
         } else {
             // In stealth mode, the sprite isn't on any screen, so check the
-            // assist frame for the screenshot and response phases.
+            // assist frame for the typing and response phases.
             guard spriteIsVisibleOnThisScreen
                     || (companionManager.isStealthModeEnabled && isThisScreenTheAssistScreen)
             else {
@@ -579,7 +584,7 @@ struct BlueCursorView: View {
                     companionManager?.handleScreenshotSelectionConfirmed(croppedImageData: croppedData, selectionRect: selectionRect)
                 },
                 onCancel: { [weak companionManager] in
-                    companionManager?.cancelAssistFlow()
+                    companionManager?.cancelScreenshotSelection()
                 }
             )
             guard let screen = NSScreen.screens.first(where: {
