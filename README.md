@@ -6,12 +6,13 @@ An AI desktop companion with a pixel art pet.
 
 ## What it is
 
-Sato is a macOS menu bar app that pairs a screen-aware AI assistant with an animated pixel art companion. Select a region of your screen, type a question, and get a response in a speech bubble -- or open the chat sidebar for longer conversations. Choose from five sprites (Max, Sky, Lexi, Rover, Paris) and customize Sato's behavior with context profiles.
+Sato is a macOS menu bar app that pairs a screen-aware AI assistant with an animated pixel art companion. Select a region of your screen, type or privately dictate a question, and get a response in a speech bubble -- or open the chat sidebar for longer conversations. Choose from five sprites (Max, Sky, Lexi, Rover, Paris) and customize Sato's behavior with context profiles.
 
 ## Features
 
 - **Screenshot + question workflow** -- select a screen region, ask anything about it, get a streaming response from Claude
 - **Chat sidebar** -- follow-up conversations with full context from the original screenshot
+- **Sato Local voice input** -- dictate questions on-device with WhisperKit using Fast or Accurate transcription; recordings are never uploaded
 - **Customizable sprite** -- pick your companion: Max (Samoyed), Sky (cat), Lexi, Rover, or Paris
 - **Context profiles** -- create named profiles with plain-English instructions to customize Sato's behavior per task
 - **Stealth mode** -- hide the sprite but keep the AI assistant accessible via hotkey
@@ -25,13 +26,14 @@ Download the latest release from the [GitHub Releases page](https://github.com/v
 
 - macOS 14.2+
 - An [Anthropic API key](https://console.anthropic.com/)
+- An internet connection for the one-time speech model download; voice input works offline afterward
 
 ## Install
 
 1. Download the `.dmg` from the releases page
 2. Drag Sato to your Applications folder
 3. Launch Sato -- it appears in your menu bar (not the dock)
-4. Grant the permissions it requests (Accessibility, Screen Recording, Screen Content)
+4. Grant the permissions it requests (Accessibility, Screen Recording, Screen Content). Microphone access is optional and requested only when you use Sato Local.
 5. Open the menu bar panel and paste your Anthropic API key
 6. Press **Ctrl + Option** to start your first interaction
 
@@ -47,7 +49,7 @@ In Xcode: select the Sato scheme, set your signing team under Signing & Capabili
 
 ## How it works
 
-See [CLAUDE.md](CLAUDE.md) for the full architecture documentation.
+See [AGENTS.md](AGENTS.md) for the full architecture documentation.
 
 ## Credits
 

@@ -304,6 +304,7 @@ final class CompanionManager: ObservableObject {
 
     /// Closes the chat sidebar and returns the sprite to patrol.
     func closeChatSidebar() {
+        localSpeechTranscriptionManager.cancelActiveSpeechOperation()
         assistFlowPhase = .inactive
         chatSidebarMessages = []
         chatSidebarIsStreaming = false
@@ -404,10 +405,18 @@ final class CompanionManager: ObservableObject {
     let contextManager = ContextManager()
     let conversationStore = ConversationStore()
     let providerManager = ProviderManager()
+    let localSpeechTranscriptionManager = LocalSpeechTranscriptionManager()
 
     /// Name of the currently active context profile, for display in the speech bubble header.
     var activeContextProfileName: String? {
         contextManager.activeProfile?.name
+    }
+
+    /// Gives Whisper a small amount of vocabulary context without sending the
+    /// profile anywhere. This is especially useful for science-heavy profiles.
+    var localSpeechTranscriptionContextPrompt: String? {
+        guard let activeProfile = contextManager.activeProfile else { return nil }
+        return "\(activeProfile.name). \(activeProfile.description). \(activeProfile.instructions)"
     }
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
@@ -496,6 +505,7 @@ final class CompanionManager: ObservableObject {
 
     func start() {
         refreshAllPermissions()
+        localSpeechTranscriptionManager.refreshMicrophonePermission()
         print("🔑 Sato start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
         bindShortcutTransitions()
@@ -629,6 +639,7 @@ final class CompanionManager: ObservableObject {
 
     func stop() {
         globalPushToTalkShortcutMonitor.stop()
+        localSpeechTranscriptionManager.stop()
         overlayWindowManager.hideOverlay()
         spriteAnimationManager.stopAnimationTimer()
         transientHideTask?.cancel()
@@ -1063,6 +1074,7 @@ final class CompanionManager: ObservableObject {
     func cancelAssistFlow() {
         currentResponseTask?.cancel()
         currentResponseTask = nil
+        localSpeechTranscriptionManager.cancelActiveSpeechOperation()
         assistFlowPhase = .inactive
         assistResponseText = ""
         assistResponseIsStreaming = false
