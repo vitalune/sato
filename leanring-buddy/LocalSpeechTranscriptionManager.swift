@@ -134,6 +134,7 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
     @Published private(set) var modelPreparationStates: [LocalSpeechModel: LocalSpeechModelPreparationState]
     @Published private(set) var operationState: LocalSpeechOperationState = .idle
     @Published private(set) var microphonePermission: LocalSpeechMicrophonePermission = .notDetermined
+    @Published private(set) var microphonePermissionRequestFailureMessage: String?
     @Published private(set) var lastErrorMessage: String?
 
     private static let selectedModelUserDefaultsKey = "satoLocalSelectedSpeechModel"
@@ -233,6 +234,9 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
         if let lastErrorMessage {
             return lastErrorMessage
         }
+        if let microphonePermissionRequestFailureMessage {
+            return microphonePermissionRequestFailureMessage
+        }
 
         switch operationState {
         case .requestingMicrophonePermission:
@@ -293,6 +297,19 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
         microphonePermission: LocalSpeechMicrophonePermission
     ) -> Bool {
         preparedSpeechModel == selectedSpeechModel && microphonePermission == .notDetermined
+    }
+
+    static func microphonePermissionRequestFailureMessage(
+        accessWasGranted: Bool,
+        microphonePermissionAfterRequest: LocalSpeechMicrophonePermission
+    ) -> String? {
+        guard !accessWasGranted,
+              microphonePermissionAfterRequest == .notDetermined
+        else {
+            return nil
+        }
+
+        return "macOS couldn’t open the microphone permission prompt. Quit and reopen Sato, then try again."
     }
 
     static func elapsedPreparationTimeText(
@@ -518,11 +535,19 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
         @unknown default:
             microphonePermission = .denied
         }
+
+        if microphonePermission != .notDetermined {
+            microphonePermissionRequestFailureMessage = nil
+        }
     }
 
     func requestMicrophonePermission() {
         lastErrorMessage = nil
+        microphonePermissionRequestFailureMessage = nil
         Task { @MainActor [weak self] in
+            // Let the button finish its mouse-up interaction before macOS presents
+            // a system-owned modal permission prompt.
+            await Task.yield()
             guard let self else { return }
             _ = await self.requestMicrophonePermissionIfNeeded()
         }
@@ -838,8 +863,13 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
             operationState = .idle
         }
 
-        let microphoneAccessWasGranted = await AudioProcessor.requestRecordPermission()
+        microphonePermissionRequestFailureMessage = nil
+        let microphoneAccessWasGranted = await AVCaptureDevice.requestAccess(for: .audio)
         refreshMicrophonePermission()
+        microphonePermissionRequestFailureMessage = Self.microphonePermissionRequestFailureMessage(
+            accessWasGranted: microphoneAccessWasGranted,
+            microphonePermissionAfterRequest: microphonePermission
+        )
         return microphoneAccessWasGranted
     }
 
