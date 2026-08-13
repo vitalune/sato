@@ -5,7 +5,7 @@
 
 ## Overview
 
-macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to Claude. Claude responds with text (streamed via SSE) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements Claude references on any connected monitor.
+macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon or conventional main window). Ctrl+Option captures a selected screen region, then the user can type a question or dictate one with Sato Local before sending it to the selected AI provider. Sato Local uses WhisperKit entirely on-device and inserts an editable transcript into the current composer. A blue cursor overlay can fly to and point at UI elements the assistant references on any connected monitor.
 
 All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in the app.
 
@@ -15,10 +15,10 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
 - **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via Cloudflare Worker proxy with SSE streaming
-- **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with OpenAI and Apple Speech as fallbacks
+- **Speech-to-Text**: Sato Local via WhisperKit. Users choose Fast (Whisper large-v3-turbo) or Accurate (Whisper large-v3); converted Core ML models download on demand and remain under `~/Library/Application Support/Sato/SpeechModels/`
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
-- **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
+- **Voice Input**: Click-to-record microphone controls in the initial screenshot composer and follow-up chat composer. Audio remains in memory, is transcribed locally, is never uploaded, and is inserted as editable text rather than sent automatically.
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
 - **Analytics**: PostHog via `ClickyAnalytics.swift`
@@ -31,9 +31,8 @@ The app never calls external APIs directly. All requests go through a Cloudflare
 |-------|----------|---------|
 | `POST /chat` | `api.anthropic.com/v1/messages` | Claude vision + streaming chat |
 | `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
-| `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Fetches a short-lived (480s) AssemblyAI websocket token |
 
-Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`
+Worker secrets: `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`
 Worker vars: `ELEVENLABS_VOICE_ID`
 
 ### Key Architecture Decisions
@@ -42,11 +41,11 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 
 **Sprite Overlay**: A full-screen transparent `NSPanel` hosts the animated Samoyed dog sprite companion. It's non-activating, joins all Spaces, and never steals focus. The sprite rests at the bottom center of the screen and flies to the cursor on hotkey press. `SpriteAnimationManager` preloads GIF frames from `pet-animations/` at launch, runs a 60fps timer for position interpolation and ~8-10 FPS frame stepping, and manages the state machine (resting → flying → assisting → pointing → flying back). The waveform, spinner, speech bubbles, and pointing animations all render in this overlay via SwiftUI through `NSHostingView`.
 
-**Global Push-To-Talk Shortcut**: Background push-to-talk uses a listen-only `CGEvent` tap instead of an AppKit global monitor so modifier-based shortcuts like `ctrl + option` are detected more reliably while the app is running in the background.
+**Global Screenshot Shortcut**: Ctrl+Option uses a listen-only `CGEvent` tap instead of an AppKit global monitor so the screenshot-selection shortcut is detected reliably while Sato runs in the background. Voice input deliberately remains a visible click-to-record action in the active composer.
 
-**Shared URLSession for AssemblyAI**: A single long-lived `URLSession` is shared across all AssemblyAI streaming sessions (owned by the provider, not the session). Creating and invalidating a URLSession per session corrupts the OS connection pool and causes "Socket is not connected" errors after a few rapid reconnections.
+**Sato Local Speech**: `LocalSpeechTranscriptionManager` owns WhisperKit model lifecycle, on-demand download progress, microphone permission, in-memory recording, and transcription. Fast and Accurate have separate download roots so either model can be removed without affecting the other. Context Profile text is used only as a local Whisper prompt to improve domain vocabulary.
 
-**Transient Cursor Mode**: When stealth mode is on, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
+**Transient Cursor Mode**: When stealth mode is on, pressing the hotkey fades in the cursor overlay for the duration of the screenshot question and response flow, then fades it out automatically after 1 second of inactivity.
 
 **Context Profiles**: Users create named context profiles via the config panel that customize Sato's behavior. Each profile contains plain-English instructions injected into the Claude system prompt. Profiles are stored as JSON in `~/Library/Application Support/Sato/profiles.json` and persist across app restarts. Only one profile can be active at a time. Managed by `ContextManager.swift`.
 
@@ -63,7 +62,7 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `ContextManager.swift` | ~180 | Manages persistent Context Profiles for customizing Sato's behavior. Stores profiles as JSON in `~/Library/Application Support/Sato/profiles.json`. Provides CRUD operations, active profile switching, and starter profile creation on first launch. |
 | `ConversationStore.swift` | ~390 | Persists conversation metadata and per-message screenshot files. Retains five recent unpinned threads plus all pinned threads and protects the active thread from pruning. |
 | `OverlayWindow.swift` | ~1520 | Full-screen transparent overlays plus the dedicated chat panel controller. Manages resizable left/right docking, floating movement, edge snapping, multi-monitor clamping, and assist flow transitions. |
-| `ChatSidebarView.swift` | ~650 | Responsive docked/floating chat UI with compact latest-response mode, visible prompt input, full-thread expansion, adaptive Markdown/screenshot wrapping, pending follow-up screenshot previews, and persisted sidebar text-color controls. |
+| `ChatSidebarView.swift` | ~680 | Responsive docked/floating chat UI with compact latest-response mode, typed or Sato Local follow-up input, full-thread expansion, adaptive Markdown/screenshot wrapping, pending follow-up screenshot previews, and persisted sidebar text-color controls. |
 | `MarkdownRenderer.swift` | ~510 | Parses completed assistant responses into display-safe Markdown blocks and inline attributes. Preserves visible headings, paragraphs, list markers, code blocks, quotes, and readable LaTeX-style math. |
 | `MarkdownResponseView.swift` | ~110 | SwiftUI renderer for completed Markdown response blocks. Gives headers, paragraphs, lists, quotes, and code blocks explicit visual spacing because `Text` does not reliably render Foundation block intents. |
 | `SpeechBubbleView.swift` | ~140 | Speech bubble displaying Claude's response above the sprite. Shows active context profile name as header. Detects content overflow and shows a "Show more" button that opens the chat sidebar. |
@@ -72,13 +71,9 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `SamoyedSpriteView.swift` | ~25 | Minimal SwiftUI view that renders the current sprite frame from `SpriteAnimationManager` at 136x136pt with nearest-neighbor interpolation. |
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
-| `BuddyDictationManager.swift` | ~866 | Push-to-talk voice pipeline. Handles microphone capture via `AVAudioEngine`, provider-aware permission checks, keyboard/button dictation sessions, transcript finalization, shortcut parsing, contextual keyterms, and live audio-level reporting for waveform feedback. |
-| `BuddyTranscriptionProvider.swift` | ~100 | Protocol surface and provider factory for voice transcription backends. Resolves provider based on `VoiceTranscriptionProvider` in Info.plist — AssemblyAI, OpenAI, or Apple Speech. |
-| `AssemblyAIStreamingTranscriptionProvider.swift` | ~478 | Streaming transcription provider. Fetches temp tokens from the Cloudflare Worker, opens an AssemblyAI v3 websocket, streams PCM16 audio, tracks turn-based transcripts, and delivers finalized text on key-up. Shares a single URLSession across all sessions. |
-| `OpenAIAudioTranscriptionProvider.swift` | ~317 | Upload-based transcription provider. Buffers push-to-talk audio locally, uploads as WAV on release, returns finalized transcript. |
-| `AppleSpeechTranscriptionProvider.swift` | ~147 | Local fallback transcription provider backed by Apple's Speech framework. |
-| `BuddyAudioConversionSupport.swift` | ~108 | Audio conversion helpers. Converts live mic buffers to PCM16 mono audio and builds WAV payloads for upload-based providers. |
-| `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
+| `LocalSpeechTranscriptionManager.swift` | ~570 | Sato Local engine. Manages Fast/Accurate WhisperKit downloads, model loading, microphone permission, in-memory capture, Context Profile prompting, local transcription, cancellation, and deletion. |
+| `LocalSpeechInputView.swift` | ~510 | Shared SwiftUI mic button, text status, and Sato Local setup popover used by both composers and the menu panel. |
+| `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide Ctrl+Option monitor. Owns the listen-only `CGEvent` tap and publishes screenshot-shortcut press/release transitions. |
 | `ClaudeAPI.swift` | ~291 | Claude vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
 | `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
 | `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
@@ -87,7 +82,7 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
-| `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
+| `worker/src/index.ts` | ~142 | Cloudflare Worker proxy for AI chat and TTS. Sato Local never uses the Worker. |
 
 ## Build & Run
 

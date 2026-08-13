@@ -10,6 +10,8 @@
 import SwiftUI
 
 struct TextInputView: View {
+    @ObservedObject var speechTranscriptionManager: LocalSpeechTranscriptionManager
+    let speechContextPrompt: String?
     /// Called with the user's question text when they press Enter.
     let onSubmit: (String) -> Void
     /// Called when the user presses Escape.
@@ -19,24 +21,42 @@ struct TextInputView: View {
     @FocusState private var isTextFieldFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            TextField("Ask about this area...", text: $inputText, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.system(size: 13))
-                .foregroundColor(.white)
-                .lineLimit(1...5)
-                .focused($isTextFieldFocused)
-                .onSubmit {
-                    submitIfNotEmpty()
-                }
-                .onKeyPress(.escape) {
-                    onCancel()
-                    return .handled
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                TextField("Ask about this area...", text: $inputText, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .foregroundColor(.white)
+                    .lineLimit(1...5)
+                    .focused($isTextFieldFocused)
+                    .onSubmit {
+                        submitIfNotEmpty()
+                    }
+                    .onKeyPress(.escape) {
+                        speechTranscriptionManager.cancelActiveSpeechOperation()
+                        onCancel()
+                        return .handled
+                    }
+
+                LocalSpeechInputButton(
+                    speechTranscriptionManager: speechTranscriptionManager,
+                    inputText: $inputText,
+                    contextPrompt: speechContextPrompt,
+                    foregroundColor: DS.Colors.textSecondary,
+                    onTranscriptInserted: {
+                        isTextFieldFocused = true
+                    }
+                )
+            }
+
+            LocalSpeechCompactStatusView(
+                speechTranscriptionManager: speechTranscriptionManager,
+                textColor: DS.Colors.textTertiary
+            )
         }
-        .frame(width: 320)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(width: 360)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(DS.Colors.surface2)
@@ -68,7 +88,11 @@ struct TextInputView: View {
 
     private func submitIfNotEmpty() {
         let trimmedText = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedText.isEmpty else { return }
+        guard !trimmedText.isEmpty,
+              !speechTranscriptionManager.isSpeechInputBusy
+        else {
+            return
+        }
         onSubmit(trimmedText)
     }
 }

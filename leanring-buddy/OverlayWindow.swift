@@ -602,6 +602,8 @@ struct BlueCursorView: View {
                 Color.black.opacity(0.001) // Fill to capture outside clicks for dismissal
 
                 TextInputView(
+                    speechTranscriptionManager: companionManager.localSpeechTranscriptionManager,
+                    speechContextPrompt: companionManager.localSpeechTranscriptionContextPrompt,
                     onSubmit: { [weak companionManager] questionText in
                         companionManager?.handleTextQuestionSubmitted(questionText: questionText)
                     },
@@ -1159,6 +1161,7 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
 
         let sidebarView = ChatSidebarView(
             companionManager: companionManager,
+            speechTranscriptionManager: companionManager.localSpeechTranscriptionManager,
             windowViewState: windowViewState,
             onMinimize: { [weak self] in
                 self?.detachChatSidebar()

@@ -54,6 +54,14 @@ struct CompanionPanelView: View {
                 spritePickerRow
                     .padding(.horizontal, 16)
 
+                Spacer()
+                    .frame(height: 8)
+
+                LocalSpeechSettingsRow(
+                    speechTranscriptionManager: companionManager.localSpeechTranscriptionManager
+                )
+                .padding(.horizontal, 16)
+
                 sectionDivider
             }
 

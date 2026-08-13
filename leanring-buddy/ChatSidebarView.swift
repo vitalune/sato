@@ -35,6 +35,7 @@ final class ChatWindowViewState: ObservableObject {
 
 struct ChatSidebarView: View {
     @ObservedObject var companionManager: CompanionManager
+    @ObservedObject var speechTranscriptionManager: LocalSpeechTranscriptionManager
     @ObservedObject var windowViewState: ChatWindowViewState
     let onMinimize: () -> Void
     let onWindowDragEnded: (CGPoint) -> Void
@@ -106,6 +107,9 @@ struct ChatSidebarView: View {
             DispatchQueue.main.async {
                 isInputFieldFocused = true
             }
+        }
+        .onDisappear {
+            speechTranscriptionManager.cancelActiveSpeechOperation()
         }
     }
 
@@ -362,6 +366,17 @@ struct ChatSidebarView: View {
                             .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
                     )
 
+                LocalSpeechInputButton(
+                    speechTranscriptionManager: speechTranscriptionManager,
+                    inputText: $followUpInputText,
+                    contextPrompt: companionManager.localSpeechTranscriptionContextPrompt,
+                    foregroundColor: sidebarSecondaryTextColor,
+                    isExternallyDisabled: companionManager.chatSidebarIsStreaming,
+                    onTranscriptInserted: {
+                        isInputFieldFocused = true
+                    }
+                )
+
                 Button(action: submitFollowUp) {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 22))
@@ -373,8 +388,17 @@ struct ChatSidebarView: View {
                 }
                 .buttonStyle(.plain)
                 .pointerCursor()
-                .disabled(followUpInputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || companionManager.chatSidebarIsStreaming)
+                .disabled(
+                    followUpInputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || companionManager.chatSidebarIsStreaming
+                        || speechTranscriptionManager.isSpeechInputBusy
+                )
             }
+
+            LocalSpeechCompactStatusView(
+                speechTranscriptionManager: speechTranscriptionManager,
+                textColor: sidebarSecondaryTextColor
+            )
         }
     }
 
@@ -549,7 +573,12 @@ struct ChatSidebarView: View {
 
     private func submitFollowUp() {
         let trimmedText = followUpInputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedText.isEmpty, !companionManager.chatSidebarIsStreaming else { return }
+        guard !trimmedText.isEmpty,
+              !companionManager.chatSidebarIsStreaming,
+              !speechTranscriptionManager.isSpeechInputBusy
+        else {
+            return
+        }
         companionManager.sendChatSidebarFollowUp(messageText: trimmedText)
         followUpInputText = ""
     }
