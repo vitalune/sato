@@ -66,10 +66,58 @@ enum LocalSpeechModelDownloadState: Equatable {
 
 enum LocalSpeechOperationState: Equatable {
     case idle
-    case loadingModel
     case requestingMicrophonePermission
     case recording
     case transcribing
+}
+
+enum LocalSpeechModelPreparationStage: Int, Equatable {
+    case verifyingModel = 1
+    case optimizingForMac = 2
+    case loadingSpeechEngine = 3
+
+    static let totalStageCount = 3
+
+    var completedStageCount: Int {
+        rawValue - 1
+    }
+
+    var displayName: String {
+        switch self {
+        case .verifyingModel:
+            return "Checking model files"
+        case .optimizingForMac:
+            return "Optimizing for this Mac"
+        case .loadingSpeechEngine:
+            return "Loading voice engine"
+        }
+    }
+}
+
+enum LocalSpeechModelPreparationState: Equatable {
+    case notPrepared
+    case preparing(stage: LocalSpeechModelPreparationStage, startedAt: Date)
+    case cancelling(startedAt: Date)
+    case ready
+    case failed(message: String)
+
+    var startedAt: Date? {
+        switch self {
+        case .preparing(_, let startedAt), .cancelling(let startedAt):
+            return startedAt
+        case .notPrepared, .ready, .failed:
+            return nil
+        }
+    }
+
+    var isPreparingOrCancelling: Bool {
+        switch self {
+        case .preparing, .cancelling:
+            return true
+        case .notPrepared, .ready, .failed:
+            return false
+        }
+    }
 }
 
 enum LocalSpeechMicrophonePermission: Equatable {
@@ -83,15 +131,18 @@ enum LocalSpeechMicrophonePermission: Equatable {
 final class LocalSpeechTranscriptionManager: ObservableObject {
     @Published private(set) var selectedModel: LocalSpeechModel
     @Published private(set) var modelDownloadStates: [LocalSpeechModel: LocalSpeechModelDownloadState]
+    @Published private(set) var modelPreparationStates: [LocalSpeechModel: LocalSpeechModelPreparationState]
     @Published private(set) var operationState: LocalSpeechOperationState = .idle
     @Published private(set) var microphonePermission: LocalSpeechMicrophonePermission = .notDetermined
     @Published private(set) var lastErrorMessage: String?
 
     private static let selectedModelUserDefaultsKey = "satoLocalSelectedSpeechModel"
     private static let downloadedModelFolderUserDefaultsKeyPrefix = "satoLocalDownloadedModelFolder."
+    private static let optimizedModelVariantUserDefaultsKeyPrefix = "satoLocalOptimizedModelVariant."
     private static let modelRepository = "argmaxinc/whisperkit-coreml"
     private static let minimumTranscriptionSampleCount = 4_000
     private static let maximumContextPromptCharacterCount = 800
+    static let modelPreparationTimeoutDuration: TimeInterval = 10 * 60
 
     private let fileManager: FileManager
     private let userDefaults: UserDefaults
@@ -99,6 +150,9 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
 
     private var modelDownloadTasks: [LocalSpeechModel: Task<Void, Never>] = [:]
     private var cancelledModelDownloads: Set<LocalSpeechModel> = []
+    private var modelPreparationTasks: [LocalSpeechModel: Task<Void, Never>] = [:]
+    private var modelPreparationTimeoutTasks: [LocalSpeechModel: Task<Void, Never>] = [:]
+    private var modelPreparationCancellationReasons: [LocalSpeechModel: ModelPreparationCancellationReason] = [:]
     private var loadedWhisperKit: WhisperKit?
     private var loadedSpeechModel: LocalSpeechModel?
 
@@ -126,6 +180,7 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
         }
 
         var initialDownloadStates: [LocalSpeechModel: LocalSpeechModelDownloadState] = [:]
+        var initialPreparationStates: [LocalSpeechModel: LocalSpeechModelPreparationState] = [:]
         for speechModel in LocalSpeechModel.allCases {
             let savedModelFolderPath = userDefaults.string(
                 forKey: Self.downloadedModelFolderUserDefaultsKeyPrefix + speechModel.rawValue
@@ -136,13 +191,26 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
             } else {
                 initialDownloadStates[speechModel] = .notDownloaded
             }
+            initialPreparationStates[speechModel] = .notPrepared
         }
         modelDownloadStates = initialDownloadStates
+        modelPreparationStates = initialPreparationStates
         refreshMicrophonePermission()
+
+        // Resume interrupted first-run setup without making the user discover
+        // the delay again from the microphone button.
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            self?.prepareSelectedModel()
+        }
     }
 
     var selectedModelDownloadState: LocalSpeechModelDownloadState {
         modelDownloadState(for: selectedModel)
+    }
+
+    var selectedModelPreparationState: LocalSpeechModelPreparationState {
+        modelPreparationState(for: selectedModel)
     }
 
     var isSpeechInputBusy: Bool {
@@ -154,17 +222,19 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
     }
 
     var canChangeSelectedModel: Bool {
-        operationState == .idle
+        operationState == .idle && !selectedModelPreparationState.isPreparingOrCancelling
     }
 
     var compactStatusMessage: String? {
+        compactStatusMessage(at: Date())
+    }
+
+    func compactStatusMessage(at currentDate: Date) -> String? {
         if let lastErrorMessage {
             return lastErrorMessage
         }
 
         switch operationState {
-        case .loadingModel:
-            return "Preparing \(selectedModel.displayName) on this Mac…"
         case .requestingMicrophonePermission:
             return "Waiting for microphone access…"
         case .recording:
@@ -183,19 +253,54 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
         case .failed(let message):
             return message
         case .downloaded:
-            return nil
+            switch selectedModelPreparationState {
+            case .notPrepared:
+                return "Finish setting up \(selectedModel.displayName) to use voice input."
+            case .preparing(let stage, let startedAt):
+                let elapsedTimeText = Self.elapsedPreparationTimeText(
+                    since: startedAt,
+                    currentDate: currentDate
+                )
+                return "\(stage.displayName) · Step \(stage.rawValue) of \(LocalSpeechModelPreparationStage.totalStageCount) · \(elapsedTimeText)"
+            case .cancelling:
+                return "Stopping \(selectedModel.displayName) setup…"
+            case .ready:
+                return nil
+            case .failed(let message):
+                return message
+            }
         }
+    }
+
+    static func elapsedPreparationTimeText(
+        since startedAt: Date,
+        currentDate: Date
+    ) -> String {
+        let elapsedSeconds = max(0, Int(currentDate.timeIntervalSince(startedAt)))
+        guard elapsedSeconds >= 60 else {
+            return "\(elapsedSeconds)s elapsed"
+        }
+
+        let elapsedMinutes = elapsedSeconds / 60
+        let remainingSeconds = elapsedSeconds % 60
+        return String(format: "%dm %02ds elapsed", elapsedMinutes, remainingSeconds)
     }
 
     func modelDownloadState(for speechModel: LocalSpeechModel) -> LocalSpeechModelDownloadState {
         modelDownloadStates[speechModel] ?? .notDownloaded
     }
 
+    func modelPreparationState(for speechModel: LocalSpeechModel) -> LocalSpeechModelPreparationState {
+        modelPreparationStates[speechModel] ?? .notPrepared
+    }
+
     func selectModel(_ speechModel: LocalSpeechModel) {
-        guard canChangeSelectedModel else { return }
+        guard canChangeSelectedModel, speechModel != selectedModel else { return }
+
         selectedModel = speechModel
         userDefaults.set(speechModel.rawValue, forKey: Self.selectedModelUserDefaultsKey)
         lastErrorMessage = nil
+        prepareSelectedModel()
     }
 
     func downloadSelectedModel() {
@@ -207,6 +312,8 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
 
         cancelledModelDownloads.remove(speechModel)
         lastErrorMessage = nil
+        setModelPreparationState(.notPrepared, for: speechModel)
+        userDefaults.removeObject(forKey: optimizedModelVariantUserDefaultsKey(for: speechModel))
         setModelDownloadState(.downloading(progress: 0), for: speechModel)
 
         modelDownloadTasks[speechModel] = Task { [weak self] in
@@ -223,7 +330,16 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
         guard let modelDownloadTask = modelDownloadTasks[speechModel] else { return }
         cancelledModelDownloads.insert(speechModel)
         modelDownloadTask.cancel()
+        setModelPreparationState(.notPrepared, for: speechModel)
         setModelDownloadState(.notDownloaded, for: speechModel)
+    }
+
+    func prepareSelectedModel() {
+        prepareModel(selectedModel)
+    }
+
+    func cancelSelectedModelPreparation() {
+        cancelModelPreparation(selectedModel, reason: .userCancelled)
     }
 
     func deleteSelectedModel() {
@@ -231,7 +347,11 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
     }
 
     func deleteModel(_ speechModel: LocalSpeechModel) {
-        guard operationState == .idle else { return }
+        guard operationState == .idle,
+              modelPreparationTasks[speechModel] == nil
+        else {
+            return
+        }
 
         cancelModelDownload(speechModel)
         lastErrorMessage = nil
@@ -249,6 +369,7 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
             guard let self else { return }
             self.removeDownloadedModelFiles(speechModel)
             self.setModelDownloadState(.notDownloaded, for: speechModel)
+            self.setModelPreparationState(.notPrepared, for: speechModel)
         }
     }
 
@@ -263,11 +384,15 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
             return
         }
 
-        do {
-            operationState = .loadingModel
-            let whisperKit = try await whisperKitForSelectedModel()
-            try Task.checkCancellation()
+        guard selectedModelPreparationState == .ready,
+              loadedSpeechModel == selectedModel,
+              let loadedWhisperKit
+        else {
+            prepareSelectedModel()
+            return
+        }
 
+        do {
             operationState = .requestingMicrophonePermission
             let microphoneAccessWasGranted = await AudioProcessor.requestRecordPermission()
             refreshMicrophonePermission()
@@ -279,8 +404,8 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
                 return
             }
 
-            whisperKit.audioProcessor.purgeAudioSamples(keepingLast: 0)
-            try whisperKit.audioProcessor.startRecordingLive(inputDeviceID: nil, callback: nil)
+            loadedWhisperKit.audioProcessor.purgeAudioSamples(keepingLast: 0)
+            try loadedWhisperKit.audioProcessor.startRecordingLive(inputDeviceID: nil, callback: nil)
             operationState = .recording
         } catch is CancellationError {
             operationState = .idle
@@ -390,6 +515,18 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
             modelDownloadTask.cancel()
         }
         modelDownloadTasks.removeAll()
+
+        for modelPreparationTask in modelPreparationTasks.values {
+            modelPreparationTask.cancel()
+        }
+        modelPreparationTasks.removeAll()
+
+        for modelPreparationTimeoutTask in modelPreparationTimeoutTasks.values {
+            modelPreparationTimeoutTask.cancel()
+        }
+        modelPreparationTimeoutTasks.removeAll()
+        modelPreparationCancellationReasons.removeAll()
+
         cancelActiveSpeechOperation()
 
         let loadedWhisperKit = loadedWhisperKit
@@ -438,6 +575,11 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
                 forKey: downloadedModelFolderUserDefaultsKey(for: speechModel)
             )
             setModelDownloadState(.downloaded, for: speechModel)
+            setModelPreparationState(.notPrepared, for: speechModel)
+
+            if selectedModel == speechModel {
+                prepareModel(speechModel)
+            }
         } catch {
             let downloadWasCancelled = error is CancellationError
                 || Task.isCancelled
@@ -466,44 +608,179 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
         setModelDownloadState(.downloading(progress: clampedProgress), for: speechModel)
     }
 
-    private func whisperKitForSelectedModel() async throws -> WhisperKit {
-        if loadedSpeechModel == selectedModel,
-           let loadedWhisperKit {
-            return loadedWhisperKit
+    private func prepareModel(_ speechModel: LocalSpeechModel) {
+        guard modelDownloadState(for: speechModel) == .downloaded,
+              modelPreparationTasks[speechModel] == nil
+        else {
+            return
         }
 
-        if let loadedWhisperKit {
-            await loadedWhisperKit.unloadModels()
+        if loadedSpeechModel == speechModel,
+           loadedWhisperKit != nil {
+            setModelPreparationState(.ready, for: speechModel)
+            return
+        }
+
+        let previouslyLoadedWhisperKitToUnload: WhisperKit?
+        if let loadedSpeechModel,
+           loadedSpeechModel != speechModel {
+            previouslyLoadedWhisperKitToUnload = loadedWhisperKit
             self.loadedWhisperKit = nil
-            loadedSpeechModel = nil
+            self.loadedSpeechModel = nil
+            setModelPreparationState(.notPrepared, for: loadedSpeechModel)
+        } else {
+            previouslyLoadedWhisperKitToUnload = nil
         }
 
-        guard let downloadedModelFolderURL = downloadedModelFolderURL(for: selectedModel) else {
-            setModelDownloadState(.notDownloaded, for: selectedModel)
-            throw LocalSpeechTranscriptionError.modelFilesUnavailable
-        }
-
-        let whisperKitConfiguration = WhisperKitConfig(
-            model: selectedModel.whisperKitModelVariant,
-            downloadBase: modelDownloadBaseURL(for: selectedModel),
-            modelRepo: Self.modelRepository,
-            modelFolder: downloadedModelFolderURL.path,
-            verbose: false,
-            prewarm: true,
-            load: true,
-            download: false,
-            useBackgroundDownloadSession: false
+        lastErrorMessage = nil
+        let preparationStartedAt = Date()
+        setModelPreparationState(
+            .preparing(stage: .verifyingModel, startedAt: preparationStartedAt),
+            for: speechModel
         )
-        let newlyLoadedWhisperKit = try await WhisperKit(whisperKitConfiguration)
+        print("🎙️ Sato Local: checking \(speechModel.displayName) model files")
 
-        if Task.isCancelled {
-            await newlyLoadedWhisperKit.unloadModels()
-            throw CancellationError()
+        modelPreparationTasks[speechModel] = Task { [weak self] in
+            guard let self else { return }
+            await self.performModelPreparation(
+                speechModel,
+                preparationStartedAt: preparationStartedAt,
+                previouslyLoadedWhisperKitToUnload: previouslyLoadedWhisperKitToUnload
+            )
         }
 
-        loadedWhisperKit = newlyLoadedWhisperKit
-        loadedSpeechModel = selectedModel
-        return newlyLoadedWhisperKit
+        modelPreparationTimeoutTasks[speechModel] = Task { [weak self] in
+            do {
+                try await Task.sleep(
+                    nanoseconds: UInt64(Self.modelPreparationTimeoutDuration * 1_000_000_000)
+                )
+            } catch {
+                return
+            }
+
+            guard let self else { return }
+            self.cancelModelPreparation(speechModel, reason: .timedOut)
+        }
+    }
+
+    private func performModelPreparation(
+        _ speechModel: LocalSpeechModel,
+        preparationStartedAt: Date,
+        previouslyLoadedWhisperKitToUnload: WhisperKit?
+    ) async {
+        var newlyPreparedWhisperKit: WhisperKit?
+
+        do {
+            await previouslyLoadedWhisperKitToUnload?.unloadModels()
+            try Task.checkCancellation()
+
+            guard let downloadedModelFolderURL = downloadedModelFolderURL(for: speechModel) else {
+                setModelDownloadState(.notDownloaded, for: speechModel)
+                throw LocalSpeechTranscriptionError.modelFilesUnavailable
+            }
+
+            let whisperKitConfiguration = WhisperKitConfig(
+                model: speechModel.whisperKitModelVariant,
+                downloadBase: modelDownloadBaseURL(for: speechModel),
+                modelRepo: Self.modelRepository,
+                modelFolder: downloadedModelFolderURL.path,
+                verbose: false,
+                prewarm: false,
+                load: false,
+                download: false,
+                useBackgroundDownloadSession: false
+            )
+            let whisperKit = try await WhisperKit(whisperKitConfiguration)
+            newlyPreparedWhisperKit = whisperKit
+            try Task.checkCancellation()
+
+            if !modelHasCompletedOptimization(speechModel) {
+                setModelPreparationState(
+                    .preparing(stage: .optimizingForMac, startedAt: preparationStartedAt),
+                    for: speechModel
+                )
+                print("🎙️ Sato Local: optimizing \(speechModel.displayName) for this Mac")
+                try await whisperKit.prewarmModels()
+                try Task.checkCancellation()
+                userDefaults.set(
+                    speechModel.whisperKitModelVariant,
+                    forKey: optimizedModelVariantUserDefaultsKey(for: speechModel)
+                )
+            }
+
+            setModelPreparationState(
+                .preparing(stage: .loadingSpeechEngine, startedAt: preparationStartedAt),
+                for: speechModel
+            )
+            print("🎙️ Sato Local: loading the \(speechModel.displayName) voice engine")
+            try await whisperKit.loadModels()
+            try Task.checkCancellation()
+
+            if let previouslyLoadedWhisperKit = loadedWhisperKit,
+               previouslyLoadedWhisperKit !== whisperKit {
+                await previouslyLoadedWhisperKit.unloadModels()
+            }
+
+            loadedWhisperKit = whisperKit
+            loadedSpeechModel = speechModel
+            newlyPreparedWhisperKit = nil
+            setModelPreparationState(.ready, for: speechModel)
+            let preparationDuration = Date().timeIntervalSince(preparationStartedAt)
+            print(
+                "🎙️ Sato Local: \(speechModel.displayName) ready in "
+                    + String(format: "%.1f", preparationDuration)
+                    + " seconds"
+            )
+        } catch {
+            await newlyPreparedWhisperKit?.unloadModels()
+
+            let cancellationReason = modelPreparationCancellationReasons.removeValue(
+                forKey: speechModel
+            )
+            if Task.isCancelled || error is CancellationError || cancellationReason != nil {
+                switch cancellationReason {
+                case .timedOut:
+                    setModelPreparationState(
+                        .failed(message: "Setup didn’t finish within 10 minutes. Retry now, or restart Sato if it happens again."),
+                        for: speechModel
+                    )
+                    print("⚠️ Sato Local: \(speechModel.displayName) setup timed out")
+                case .userCancelled, .none:
+                    setModelPreparationState(.notPrepared, for: speechModel)
+                    print("🎙️ Sato Local: \(speechModel.displayName) setup cancelled")
+                }
+            } else {
+                setModelPreparationState(
+                    .failed(message: "Couldn’t finish setting up \(speechModel.displayName). Retry, or remove and download the model again if it keeps happening."),
+                    for: speechModel
+                )
+                print(
+                    "⚠️ Sato Local: \(speechModel.displayName) setup failed: "
+                        + error.localizedDescription
+                )
+            }
+        }
+
+        modelPreparationTimeoutTasks.removeValue(forKey: speechModel)?.cancel()
+        modelPreparationTasks[speechModel] = nil
+    }
+
+    private func cancelModelPreparation(
+        _ speechModel: LocalSpeechModel,
+        reason: ModelPreparationCancellationReason
+    ) {
+        guard let modelPreparationTask = modelPreparationTasks[speechModel] else { return }
+
+        let preparationStartedAt = modelPreparationState(for: speechModel).startedAt ?? Date()
+        modelPreparationCancellationReasons[speechModel] = reason
+        setModelPreparationState(.cancelling(startedAt: preparationStartedAt), for: speechModel)
+        modelPreparationTimeoutTasks.removeValue(forKey: speechModel)?.cancel()
+        modelPreparationTask.cancel()
+    }
+
+    private func modelHasCompletedOptimization(_ speechModel: LocalSpeechModel) -> Bool {
+        userDefaults.string(forKey: optimizedModelVariantUserDefaultsKey(for: speechModel))
+            == speechModel.whisperKitModelVariant
     }
 
     private func transcriptionPromptTokens(
@@ -538,12 +815,17 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
         Self.downloadedModelFolderUserDefaultsKeyPrefix + speechModel.rawValue
     }
 
+    private func optimizedModelVariantUserDefaultsKey(for speechModel: LocalSpeechModel) -> String {
+        Self.optimizedModelVariantUserDefaultsKeyPrefix + speechModel.rawValue
+    }
+
     private func removeDownloadedModelFiles(_ speechModel: LocalSpeechModel) {
         let modelDownloadBaseURL = modelDownloadBaseURL(for: speechModel)
         if fileManager.fileExists(atPath: modelDownloadBaseURL.path) {
             try? fileManager.removeItem(at: modelDownloadBaseURL)
         }
         userDefaults.removeObject(forKey: downloadedModelFolderUserDefaultsKey(for: speechModel))
+        userDefaults.removeObject(forKey: optimizedModelVariantUserDefaultsKey(for: speechModel))
     }
 
     private func setModelDownloadState(
@@ -554,6 +836,20 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
         updatedModelDownloadStates[speechModel] = downloadState
         modelDownloadStates = updatedModelDownloadStates
     }
+
+    private func setModelPreparationState(
+        _ preparationState: LocalSpeechModelPreparationState,
+        for speechModel: LocalSpeechModel
+    ) {
+        var updatedModelPreparationStates = modelPreparationStates
+        updatedModelPreparationStates[speechModel] = preparationState
+        modelPreparationStates = updatedModelPreparationStates
+    }
+}
+
+private enum ModelPreparationCancellationReason {
+    case userCancelled
+    case timedOut
 }
 
 private enum LocalSpeechTranscriptionError: LocalizedError {
