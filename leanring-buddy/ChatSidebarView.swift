@@ -41,6 +41,9 @@ struct ChatSidebarView: View {
     let onClose: () -> Void
 
     @State private var followUpInputText: String = ""
+    @State private var isTextColorSettingsPresented = false
+    @AppStorage("chatSidebarUsesCustomTextColor") private var usesCustomTextColor = false
+    @AppStorage("chatSidebarCustomTextColorHex") private var customTextColorHex = "#DB2777"
     @FocusState private var isInputFieldFocused: Bool
 
     var body: some View {
@@ -113,12 +116,12 @@ struct ChatSidebarView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Sato")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(DS.Colors.textPrimary)
+                    .foregroundColor(sidebarPrimaryTextColor)
 
                 if let profileName = companionManager.activeContextProfileName {
                     Text(profileName)
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(DS.Colors.textTertiary)
+                        .foregroundColor(sidebarSecondaryTextColor)
                 }
             }
 
@@ -133,7 +136,7 @@ struct ChatSidebarView: View {
                 Button(action: onMinimize) {
                     Image(systemName: "arrow.down.right.and.arrow.up.left")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(DS.Colors.textTertiary)
+                        .foregroundColor(sidebarSecondaryTextColor)
                         .frame(width: 24, height: 24)
                         .background(
                             Circle()
@@ -145,10 +148,29 @@ struct ChatSidebarView: View {
                 .help("Detach chat")
             }
 
+            Button {
+                isTextColorSettingsPresented.toggle()
+            } label: {
+                Image(systemName: "paintpalette")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(usesCustomTextColor ? customSidebarTextColor : sidebarSecondaryTextColor)
+                    .frame(width: 24, height: 24)
+                    .background(
+                        Circle()
+                            .fill(Color.white.opacity(0.08))
+                    )
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .help("Sidebar text color")
+            .popover(isPresented: $isTextColorSettingsPresented, arrowEdge: .bottom) {
+                sidebarTextColorSettings
+            }
+
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(DS.Colors.textTertiary)
+                    .foregroundColor(sidebarSecondaryTextColor)
                     .frame(width: 24, height: 24)
                     .background(
                         Circle()
@@ -195,7 +217,7 @@ struct ChatSidebarView: View {
             VStack(alignment: .leading, spacing: 7) {
                 Text("Latest response")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(DS.Colors.textTertiary)
+                    .foregroundColor(sidebarSecondaryTextColor)
                     .textCase(.uppercase)
 
                 if let latestAssistantMessage = companionManager.chatSidebarMessages.last(where: {
@@ -205,9 +227,14 @@ struct ChatSidebarView: View {
                         if isAssistantMessageCurrentlyStreaming(message: latestAssistantMessage) {
                             Text(latestAssistantMessage.text)
                                 .font(.system(size: 13))
-                                .foregroundColor(DS.Colors.textPrimary)
+                                .foregroundColor(sidebarPrimaryTextColor)
                         } else {
-                            MarkdownResponseView(markdown: latestAssistantMessage.text)
+                            MarkdownResponseView(
+                                markdown: latestAssistantMessage.text,
+                                primaryTextColor: sidebarPrimaryTextColor,
+                                secondaryTextColor: sidebarSecondaryTextColor,
+                                codeTextColor: sidebarCodeTextColor
+                            )
                         }
                     }
                     .textSelection(.enabled)
@@ -216,7 +243,7 @@ struct ChatSidebarView: View {
                 } else {
                     Text("No response yet.")
                         .font(.system(size: 13))
-                        .foregroundColor(DS.Colors.textTertiary)
+                        .foregroundColor(sidebarSecondaryTextColor)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -246,11 +273,20 @@ struct ChatSidebarView: View {
             if !message.text.isEmpty {
                 Group {
                     if message.role == .assistant && !isAssistantMessageCurrentlyStreaming(message: message) {
-                        MarkdownResponseView(markdown: message.text)
+                        MarkdownResponseView(
+                            markdown: message.text,
+                            primaryTextColor: sidebarBubblePrimaryTextColor,
+                            secondaryTextColor: sidebarBubbleSecondaryTextColor,
+                            codeTextColor: sidebarCodeTextColor
+                        )
                     } else {
                         Text(message.text)
                             .font(.system(size: 13))
-                            .foregroundColor(message.role == .user ? .white : DS.Colors.textPrimary)
+                            .foregroundColor(
+                                message.role == .user
+                                    ? sidebarUserBubbleTextColor
+                                    : sidebarBubblePrimaryTextColor
+                            )
                     }
                 }
                     .textSelection(.enabled)
@@ -272,7 +308,7 @@ struct ChatSidebarView: View {
                         .controlSize(.mini)
                     Text("Thinking...")
                         .font(.system(size: 12))
-                        .foregroundColor(DS.Colors.textTertiary)
+                        .foregroundColor(sidebarBubbleSecondaryTextColor)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -284,7 +320,7 @@ struct ChatSidebarView: View {
 
             Text(formatTimestamp(message.timestamp))
                 .font(.system(size: 10))
-                .foregroundColor(DS.Colors.textTertiary)
+                .foregroundColor(sidebarSecondaryTextColor)
         }
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
     }
@@ -308,7 +344,7 @@ struct ChatSidebarView: View {
                 )
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
-                    .foregroundColor(DS.Colors.textPrimary)
+                    .foregroundColor(sidebarPrimaryTextColor)
                     .lineLimit(1...4)
                     .fixedSize(horizontal: false, vertical: true)
                     .focused($isInputFieldFocused)
@@ -331,7 +367,7 @@ struct ChatSidebarView: View {
                         .font(.system(size: 22))
                         .foregroundColor(
                             followUpInputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                ? DS.Colors.textTertiary
+                                ? sidebarSecondaryTextColor
                                 : DS.Colors.accent
                         )
                 }
@@ -357,10 +393,10 @@ struct ChatSidebarView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Screenshot attached")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(DS.Colors.textPrimary)
+                    .foregroundColor(sidebarBubblePrimaryTextColor)
                 Text("Ctrl+Option captured this for your next reply.")
                     .font(.system(size: 10))
-                    .foregroundColor(DS.Colors.textTertiary)
+                    .foregroundColor(sidebarBubbleSecondaryTextColor)
             }
 
             Spacer(minLength: 0)
@@ -370,7 +406,7 @@ struct ChatSidebarView: View {
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 14))
-                    .foregroundColor(DS.Colors.textTertiary)
+                    .foregroundColor(sidebarBubbleSecondaryTextColor)
             }
             .buttonStyle(.plain)
             .pointerCursor()
@@ -381,6 +417,90 @@ struct ChatSidebarView: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(DS.Colors.surface2)
         )
+    }
+
+    // MARK: - Text Color Settings
+
+    private var sidebarTextColorSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Sidebar text")
+                .font(.system(size: 13, weight: .semibold))
+
+            Toggle("Use custom color", isOn: $usesCustomTextColor)
+                .font(.system(size: 12))
+                .toggleStyle(.switch)
+                .pointerCursor()
+
+            if usesCustomTextColor {
+                ColorPicker(
+                    "Text color",
+                    selection: customSidebarTextColorBinding,
+                    supportsOpacity: false
+                )
+                .font(.system(size: 12))
+                .pointerCursor()
+
+                Button("Pink") {
+                    customTextColorHex = "#DB2777"
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .pointerCursor()
+            }
+
+            Text("Automatic follows macOS light and dark appearances.")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(width: 240)
+    }
+
+    private var customSidebarTextColor: Color {
+        Color(hex: customTextColorHex)
+    }
+
+    private var customSidebarTextColorBinding: Binding<Color> {
+        Binding(
+            get: { customSidebarTextColor },
+            set: { selectedColor in
+                guard let sRGBColor = NSColor(selectedColor).usingColorSpace(.sRGB) else { return }
+                let redComponent = Int(round(sRGBColor.redComponent * 255))
+                let greenComponent = Int(round(sRGBColor.greenComponent * 255))
+                let blueComponent = Int(round(sRGBColor.blueComponent * 255))
+                customTextColorHex = String(
+                    format: "#%02X%02X%02X",
+                    redComponent,
+                    greenComponent,
+                    blueComponent
+                )
+            }
+        )
+    }
+
+    private var sidebarPrimaryTextColor: Color {
+        usesCustomTextColor ? customSidebarTextColor : .primary
+    }
+
+    private var sidebarSecondaryTextColor: Color {
+        usesCustomTextColor ? customSidebarTextColor.opacity(0.72) : .secondary
+    }
+
+    private var sidebarBubblePrimaryTextColor: Color {
+        usesCustomTextColor ? customSidebarTextColor : DS.Colors.textPrimary
+    }
+
+    private var sidebarBubbleSecondaryTextColor: Color {
+        usesCustomTextColor ? customSidebarTextColor.opacity(0.72) : DS.Colors.textSecondary
+    }
+
+    private var sidebarUserBubbleTextColor: Color {
+        usesCustomTextColor ? customSidebarTextColor : DS.Colors.textOnAccent
+    }
+
+    private var sidebarCodeTextColor: Color {
+        usesCustomTextColor ? customSidebarTextColor : DS.Colors.codeText
     }
 
     // MARK: - Helpers

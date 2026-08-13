@@ -5,6 +5,9 @@ import SwiftUI
 /// which can collapse headers and list markers into a single run of text.
 struct MarkdownResponseView: View {
     let markdown: String
+    var primaryTextColor: Color = DS.Colors.textPrimary
+    var secondaryTextColor: Color = DS.Colors.textSecondary
+    var codeTextColor: Color = DS.Colors.codeText
 
     private var blocks: [MarkdownRenderer.Block] {
         MarkdownRenderer.blocks(for: markdown)
@@ -25,13 +28,13 @@ struct MarkdownResponseView: View {
         case .heading(let level, let text):
             Text(MarkdownRenderer.renderInline(text))
                 .font(headingFont(for: level))
-                .foregroundColor(DS.Colors.textPrimary)
+                .foregroundColor(primaryTextColor)
                 .padding(.top, level <= 2 ? 4 : 1)
 
         case .paragraph(let text):
             Text(MarkdownRenderer.renderInline(text))
                 .font(.system(size: 13))
-                .foregroundColor(DS.Colors.textPrimary)
+                .foregroundColor(primaryTextColor)
 
         case .unorderedListItem(let indentLevel, let text):
             listItem(
@@ -50,7 +53,7 @@ struct MarkdownResponseView: View {
         case .codeBlock(let code):
             Text(code)
                 .font(.system(size: 12, design: .monospaced))
-                .foregroundColor(DS.Colors.codeText)
+                .foregroundColor(codeTextColor)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(10)
                 .background(
@@ -66,7 +69,7 @@ struct MarkdownResponseView: View {
                 Text(MarkdownRenderer.renderInline(text))
                     .font(.system(size: 13))
                     .italic()
-                    .foregroundColor(DS.Colors.textSecondary)
+                    .foregroundColor(secondaryTextColor)
             }
 
         case .horizontalRule:
@@ -85,12 +88,12 @@ struct MarkdownResponseView: View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(marker)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(DS.Colors.textSecondary)
+                .foregroundColor(secondaryTextColor)
                 .frame(minWidth: marker.count > 1 ? 18 : 10, alignment: .trailing)
 
             Text(MarkdownRenderer.renderInline(text))
                 .font(.system(size: 13))
-                .foregroundColor(DS.Colors.textPrimary)
+                .foregroundColor(primaryTextColor)
         }
         .padding(.leading, CGFloat(indentLevel) * 14)
     }

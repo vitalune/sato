@@ -234,10 +234,9 @@ cat > "$RELEASE_NOTES_PATH" <<EOF
 
 ## What's new
 
-- Press Ctrl+Option during an open chat to capture another screenshot for the next
-  follow-up turn in that same conversation.
-- Show follow-up screenshots in the sidebar chat history and send them with the
-  reply, while keeping earlier screenshots available in conversation context.
+- Sidebar text now remains readable when macOS is using Light appearance.
+- Choose any custom sidebar text color from the new palette control. Pink is
+  ready as the default custom option, and the choice persists across launches.
 EOF
 
 DMG_SIZE=$(stat -f%z "$DMG_PATH")
