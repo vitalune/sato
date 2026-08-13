@@ -293,7 +293,9 @@ struct LocalSpeechCompactStatusView: View {
                 switch speechTranscriptionManager.microphonePermission {
                 case .notDetermined:
                     compactActionButton(
-                        title: "Allow",
+                        title: speechTranscriptionManager.microphonePermissionRequestFailureMessage == nil
+                            ? "Allow"
+                            : "Retry",
                         action: speechTranscriptionManager.requestMicrophonePermission
                     )
                 case .denied, .restricted:
@@ -322,7 +324,8 @@ struct LocalSpeechCompactStatusView: View {
     }
 
     private var statusSymbolName: String {
-        if speechTranscriptionManager.lastErrorMessage != nil {
+        if speechTranscriptionManager.lastErrorMessage != nil ||
+            speechTranscriptionManager.microphonePermissionRequestFailureMessage != nil {
             return "exclamationmark.triangle.fill"
         }
 
@@ -366,7 +369,8 @@ struct LocalSpeechCompactStatusView: View {
     }
 
     private var statusColor: Color {
-        if speechTranscriptionManager.lastErrorMessage != nil {
+        if speechTranscriptionManager.lastErrorMessage != nil ||
+            speechTranscriptionManager.microphonePermissionRequestFailureMessage != nil {
             return DS.Colors.warningText
         }
         if case .failed = speechTranscriptionManager.selectedModelDownloadState {
@@ -587,15 +591,33 @@ private struct LocalSpeechSettingsView: View {
             switch speechTranscriptionManager.microphonePermission {
             case .notDetermined:
                 if speechTranscriptionManager.selectedModelPreparationState == .ready {
-                    Button {
-                        speechTranscriptionManager.requestMicrophonePermission()
-                    } label: {
-                        Label("Allow Microphone Access", systemImage: "mic")
+                    VStack(alignment: .leading, spacing: 8) {
+                        if let microphonePermissionRequestFailureMessage =
+                            speechTranscriptionManager.microphonePermissionRequestFailureMessage {
+                            Label(
+                                microphonePermissionRequestFailureMessage,
+                                systemImage: "exclamationmark.triangle.fill"
+                            )
+                            .font(.system(size: 10))
+                            .foregroundColor(DS.Colors.warningText)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Button {
+                            speechTranscriptionManager.requestMicrophonePermission()
+                        } label: {
+                            Label(
+                                speechTranscriptionManager.microphonePermissionRequestFailureMessage == nil
+                                    ? "Allow Microphone Access"
+                                    : "Try Again",
+                                systemImage: "mic"
+                            )
                             .font(.system(size: 11, weight: .medium))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .pointerCursor()
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .pointerCursor()
                 }
             case .authorized:
                 EmptyView()

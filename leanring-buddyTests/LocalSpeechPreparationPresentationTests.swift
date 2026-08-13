@@ -99,4 +99,41 @@ struct LocalSpeechPreparationPresentationTests {
             ) == "Microphone access is restricted on this Mac."
         )
     }
+
+    @Test func unresolvedMicrophoneRequestHasVisibleRecoveryMessage() {
+        #expect(
+            LocalSpeechTranscriptionManager.microphonePermissionRequestFailureMessage(
+                accessWasGranted: false,
+                microphonePermissionAfterRequest: .notDetermined
+            ) == "macOS couldn’t open the microphone permission prompt. Quit and reopen Sato, then try again."
+        )
+        #expect(
+            LocalSpeechTranscriptionManager.microphonePermissionRequestFailureMessage(
+                accessWasGranted: false,
+                microphonePermissionAfterRequest: .denied
+            ) == nil
+        )
+        #expect(
+            LocalSpeechTranscriptionManager.microphonePermissionRequestFailureMessage(
+                accessWasGranted: true,
+                microphonePermissionAfterRequest: .authorized
+            ) == nil
+        )
+    }
+
+    @Test func hardenedRuntimeBuildDeclaresAudioInputEntitlement() throws {
+        let repositoryRootURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let entitlementsURL = repositoryRootURL
+            .appendingPathComponent("leanring-buddy", isDirectory: true)
+            .appendingPathComponent("leanring-buddy.entitlements")
+        let entitlementsData = try Data(contentsOf: entitlementsURL)
+        let entitlements = try PropertyListSerialization.propertyList(
+            from: entitlementsData,
+            format: nil
+        ) as? [String: Any]
+
+        #expect(entitlements?["com.apple.security.device.audio-input"] as? Bool == true)
+    }
 }
