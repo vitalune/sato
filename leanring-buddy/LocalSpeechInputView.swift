@@ -289,7 +289,22 @@ struct LocalSpeechCompactStatusView: View {
                     title: "Retry",
                     action: speechTranscriptionManager.prepareSelectedModel
                 )
-            case .cancelling, .ready:
+            case .ready:
+                switch speechTranscriptionManager.microphonePermission {
+                case .notDetermined:
+                    compactActionButton(
+                        title: "Allow",
+                        action: speechTranscriptionManager.requestMicrophonePermission
+                    )
+                case .denied, .restricted:
+                    compactActionButton(
+                        title: "Settings",
+                        action: speechTranscriptionManager.openMicrophonePrivacySettings
+                    )
+                case .authorized:
+                    EmptyView()
+                }
+            case .cancelling:
                 EmptyView()
             }
         }
@@ -335,7 +350,14 @@ struct LocalSpeechCompactStatusView: View {
                 case .cancelling:
                     return "xmark.circle"
                 case .ready:
-                    return "checkmark.circle"
+                    switch speechTranscriptionManager.microphonePermission {
+                    case .notDetermined:
+                        return "mic.fill"
+                    case .authorized:
+                        return "checkmark.circle"
+                    case .denied, .restricted:
+                        return "mic.slash.fill"
+                    }
                 case .failed:
                     return "exclamationmark.triangle.fill"
                 }
@@ -351,6 +373,11 @@ struct LocalSpeechCompactStatusView: View {
             return DS.Colors.warningText
         }
         if case .failed = speechTranscriptionManager.selectedModelPreparationState {
+            return DS.Colors.warningText
+        }
+        if speechTranscriptionManager.selectedModelPreparationState == .ready,
+           (speechTranscriptionManager.microphonePermission == .denied
+            || speechTranscriptionManager.microphonePermission == .restricted) {
             return DS.Colors.warningText
         }
         if speechTranscriptionManager.isRecording {
@@ -437,9 +464,7 @@ struct LocalSpeechSettingsRow: View {
                 ProgressView()
                     .controlSize(.mini)
             case .ready:
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 11))
-                    .foregroundColor(DS.Colors.success)
+                readyModelStatusContent
             case .failed:
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 11))
@@ -447,6 +472,24 @@ struct LocalSpeechSettingsRow: View {
             }
         case .failed:
             Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11))
+                .foregroundColor(DS.Colors.warningText)
+        }
+    }
+
+    @ViewBuilder
+    private var readyModelStatusContent: some View {
+        switch speechTranscriptionManager.microphonePermission {
+        case .notDetermined:
+            Image(systemName: "mic.fill")
+                .font(.system(size: 11))
+                .foregroundColor(DS.Colors.accentText)
+        case .authorized:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 11))
+                .foregroundColor(DS.Colors.success)
+        case .denied, .restricted:
+            Image(systemName: "mic.slash.fill")
                 .font(.system(size: 11))
                 .foregroundColor(DS.Colors.warningText)
         }
@@ -505,18 +548,7 @@ private struct LocalSpeechSettingsView: View {
 
             modelDownloadStatus
 
-            if speechTranscriptionManager.microphonePermission == .denied
-                || speechTranscriptionManager.microphonePermission == .restricted {
-                Button {
-                    speechTranscriptionManager.openMicrophonePrivacySettings()
-                } label: {
-                    Label("Open Microphone Settings", systemImage: "mic.slash")
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .pointerCursor()
-            }
+            microphonePermissionStatus
 
             HStack(alignment: .top, spacing: 7) {
                 Image(systemName: "checkmark.shield")
@@ -542,6 +574,42 @@ private struct LocalSpeechSettingsView: View {
         }
         .onAppear {
             speechTranscriptionManager.refreshMicrophonePermission()
+        }
+    }
+
+    @ViewBuilder
+    private var microphonePermissionStatus: some View {
+        if speechTranscriptionManager.operationState == .requestingMicrophonePermission {
+            Label("Waiting for microphone access…", systemImage: "hourglass")
+                .font(.system(size: 10))
+                .foregroundColor(DS.Colors.textSecondary)
+        } else {
+            switch speechTranscriptionManager.microphonePermission {
+            case .notDetermined:
+                if speechTranscriptionManager.selectedModelPreparationState == .ready {
+                    Button {
+                        speechTranscriptionManager.requestMicrophonePermission()
+                    } label: {
+                        Label("Allow Microphone Access", systemImage: "mic")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .pointerCursor()
+                }
+            case .authorized:
+                EmptyView()
+            case .denied, .restricted:
+                Button {
+                    speechTranscriptionManager.openMicrophonePrivacySettings()
+                } label: {
+                    Label("Open Microphone Settings", systemImage: "mic.slash")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .pointerCursor()
+            }
         }
     }
 

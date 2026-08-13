@@ -265,11 +265,34 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
             case .cancelling:
                 return "Stopping \(selectedModel.displayName) setup…"
             case .ready:
-                return nil
+                return Self.microphonePermissionStatusMessage(for: microphonePermission)
             case .failed(let message):
                 return message
             }
         }
+    }
+
+    static func microphonePermissionStatusMessage(
+        for microphonePermission: LocalSpeechMicrophonePermission
+    ) -> String? {
+        switch microphonePermission {
+        case .notDetermined:
+            return "Allow microphone access to use Sato Local."
+        case .authorized:
+            return nil
+        case .denied:
+            return "Microphone access is off. Enable it in System Settings."
+        case .restricted:
+            return "Microphone access is restricted on this Mac."
+        }
+    }
+
+    static func shouldRequestMicrophonePermissionAfterModelPreparation(
+        preparedSpeechModel: LocalSpeechModel,
+        selectedSpeechModel: LocalSpeechModel,
+        microphonePermission: LocalSpeechMicrophonePermission
+    ) -> Bool {
+        preparedSpeechModel == selectedSpeechModel && microphonePermission == .notDetermined
     }
 
     static func elapsedPreparationTimeText(
@@ -393,14 +416,10 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
         }
 
         do {
-            operationState = .requestingMicrophonePermission
-            let microphoneAccessWasGranted = await AudioProcessor.requestRecordPermission()
-            refreshMicrophonePermission()
+            let microphoneAccessWasGranted = await requestMicrophonePermissionIfNeeded()
             try Task.checkCancellation()
 
             guard microphoneAccessWasGranted else {
-                operationState = .idle
-                lastErrorMessage = "Microphone access is off. Enable it in System Settings to use Sato Local."
                 return
             }
 
@@ -498,6 +517,14 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
             microphonePermission = .restricted
         @unknown default:
             microphonePermission = .denied
+        }
+    }
+
+    func requestMicrophonePermission() {
+        lastErrorMessage = nil
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            _ = await self.requestMicrophonePermissionIfNeeded()
         }
     }
 
@@ -618,6 +645,7 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
         if loadedSpeechModel == speechModel,
            loadedWhisperKit != nil {
             setModelPreparationState(.ready, for: speechModel)
+            scheduleMicrophonePermissionRequestAfterModelBecomesReady(speechModel)
             return
         }
 
@@ -725,6 +753,7 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
             loadedSpeechModel = speechModel
             newlyPreparedWhisperKit = nil
             setModelPreparationState(.ready, for: speechModel)
+            scheduleMicrophonePermissionRequestAfterModelBecomesReady(speechModel)
             let preparationDuration = Date().timeIntervalSince(preparationStartedAt)
             print(
                 "🎙️ Sato Local: \(speechModel.displayName) ready in "
@@ -763,6 +792,55 @@ final class LocalSpeechTranscriptionManager: ObservableObject {
 
         modelPreparationTimeoutTasks.removeValue(forKey: speechModel)?.cancel()
         modelPreparationTasks[speechModel] = nil
+    }
+
+    private func scheduleMicrophonePermissionRequestAfterModelBecomesReady(
+        _ speechModel: LocalSpeechModel
+    ) {
+        // Let the Ready state render and the preparation task clean itself up before
+        // macOS presents its modal permission dialog.
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self else { return }
+
+            self.refreshMicrophonePermission()
+            guard Self.shouldRequestMicrophonePermissionAfterModelPreparation(
+                preparedSpeechModel: speechModel,
+                selectedSpeechModel: self.selectedModel,
+                microphonePermission: self.microphonePermission
+            ), self.modelPreparationState(for: speechModel) == .ready,
+               self.loadedSpeechModel == speechModel,
+               self.operationState == .idle
+            else {
+                return
+            }
+
+            _ = await self.requestMicrophonePermissionIfNeeded()
+        }
+    }
+
+    private func requestMicrophonePermissionIfNeeded() async -> Bool {
+        refreshMicrophonePermission()
+
+        switch microphonePermission {
+        case .authorized:
+            return true
+        case .denied, .restricted:
+            return false
+        case .notDetermined:
+            break
+        }
+
+        guard operationState == .idle else { return false }
+
+        operationState = .requestingMicrophonePermission
+        defer {
+            operationState = .idle
+        }
+
+        let microphoneAccessWasGranted = await AudioProcessor.requestRecordPermission()
+        refreshMicrophonePermission()
+        return microphoneAccessWasGranted
     }
 
     private func cancelModelPreparation(

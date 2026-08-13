@@ -52,4 +52,51 @@ struct LocalSpeechPreparationPresentationTests {
     @Test func modelPreparationHasATenMinuteSafetyTimeout() {
         #expect(LocalSpeechTranscriptionManager.modelPreparationTimeoutDuration == 600)
     }
+
+    @Test func selectedReadyModelRequestsUndeterminedMicrophonePermission() {
+        #expect(
+            LocalSpeechTranscriptionManager.shouldRequestMicrophonePermissionAfterModelPreparation(
+                preparedSpeechModel: .fast,
+                selectedSpeechModel: .fast,
+                microphonePermission: .notDetermined
+            )
+        )
+        #expect(
+            !LocalSpeechTranscriptionManager.shouldRequestMicrophonePermissionAfterModelPreparation(
+                preparedSpeechModel: .fast,
+                selectedSpeechModel: .accurate,
+                microphonePermission: .notDetermined
+            )
+        )
+        #expect(
+            !LocalSpeechTranscriptionManager.shouldRequestMicrophonePermissionAfterModelPreparation(
+                preparedSpeechModel: .fast,
+                selectedSpeechModel: .fast,
+                microphonePermission: .authorized
+            )
+        )
+    }
+
+    @Test func readyModelStatusExplainsMicrophonePermissionRecovery() {
+        #expect(
+            LocalSpeechTranscriptionManager.microphonePermissionStatusMessage(
+                for: .notDetermined
+            ) == "Allow microphone access to use Sato Local."
+        )
+        #expect(
+            LocalSpeechTranscriptionManager.microphonePermissionStatusMessage(
+                for: .authorized
+            ) == nil
+        )
+        #expect(
+            LocalSpeechTranscriptionManager.microphonePermissionStatusMessage(
+                for: .denied
+            ) == "Microphone access is off. Enable it in System Settings."
+        )
+        #expect(
+            LocalSpeechTranscriptionManager.microphonePermissionStatusMessage(
+                for: .restricted
+            ) == "Microphone access is restricted on this Mac."
+        )
+    }
 }
