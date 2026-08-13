@@ -18,7 +18,7 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **Speech-to-Text**: Sato Local via WhisperKit. Users choose Fast (Whisper large-v3-turbo) or Accurate (Whisper large-v3); converted Core ML models download on demand and remain under `~/Library/Application Support/Sato/SpeechModels/`
 - **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
-- **Voice Input**: Click-to-record microphone controls in the initial screenshot composer and follow-up chat composer. Audio remains in memory, is transcribed locally, is never uploaded, and is inserted as editable text rather than sent automatically.
+- **Voice Input**: Click-to-record microphone controls in the initial screenshot composer and follow-up chat composer, with Cmd+Shift+M as the composer-scoped start/stop shortcut. Audio remains in memory, is transcribed locally, is never uploaded, and is inserted as editable text rather than sent automatically.
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
 - **Analytics**: PostHog via `ClickyAnalytics.swift`
@@ -41,9 +41,9 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 
 **Sprite Overlay**: A full-screen transparent `NSPanel` hosts the animated Samoyed dog sprite companion. It's non-activating, joins all Spaces, and never steals focus. The sprite rests at the bottom center of the screen and flies to the cursor on hotkey press. `SpriteAnimationManager` preloads GIF frames from `pet-animations/` at launch, runs a 60fps timer for position interpolation and ~8-10 FPS frame stepping, and manages the state machine (resting → flying → assisting → pointing → flying back). The waveform, spinner, speech bubbles, and pointing animations all render in this overlay via SwiftUI through `NSHostingView`.
 
-**Global Screenshot Shortcut**: Ctrl+Option uses a listen-only `CGEvent` tap instead of an AppKit global monitor so the screenshot-selection shortcut is detected reliably while Sato runs in the background. Voice input deliberately remains a visible click-to-record action in the active composer.
+**Global Screenshot Shortcut**: Ctrl+Option uses a listen-only `CGEvent` tap instead of an AppKit global monitor so the screenshot-selection shortcut is detected reliably while Sato runs in the background. Voice input remains scoped to the visible composer and can be started or stopped with its microphone button or Cmd+Shift+M.
 
-**Sato Local Speech**: `LocalSpeechTranscriptionManager` owns WhisperKit model lifecycle, on-demand download progress, microphone permission, in-memory recording, and transcription. Fast and Accurate have separate download roots so either model can be removed without affecting the other. Context Profile text is used only as a local Whisper prompt to improve domain vocabulary.
+**Sato Local Speech**: `LocalSpeechTranscriptionManager` owns WhisperKit model lifecycle, on-demand download progress, microphone permission, in-memory recording, and transcription. After a model downloads, its Core ML preparation continues independently in the background through visible verification, optimization, and loading stages. Preparation supports cancellation, retry, elapsed-time feedback, and a ten-minute timeout; successful device optimization is remembered so later launches skip the expensive first pass. Fast and Accurate have separate download roots so either model can be removed without affecting the other. Context Profile text is used only as a local Whisper prompt to improve domain vocabulary.
 
 **Transient Cursor Mode**: When stealth mode is on, pressing the hotkey fades in the cursor overlay for the duration of the screenshot question and response flow, then fades it out automatically after 1 second of inactivity.
 
@@ -71,8 +71,9 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `SamoyedSpriteView.swift` | ~25 | Minimal SwiftUI view that renders the current sprite frame from `SpriteAnimationManager` at 136x136pt with nearest-neighbor interpolation. |
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
-| `LocalSpeechTranscriptionManager.swift` | ~570 | Sato Local engine. Manages Fast/Accurate WhisperKit downloads, model loading, microphone permission, in-memory capture, Context Profile prompting, local transcription, cancellation, and deletion. |
-| `LocalSpeechInputView.swift` | ~510 | Shared SwiftUI mic button, text status, and Sato Local setup popover used by both composers and the menu panel. |
+| `LocalSpeechTranscriptionManager.swift` | ~840 | Sato Local engine. Manages Fast/Accurate WhisperKit downloads, staged background preparation, preparation timeout/recovery, model loading, microphone permission, in-memory capture, Context Profile prompting, local transcription, cancellation, and deletion. |
+| `LocalSpeechInputView.swift` | ~735 | Shared SwiftUI mic button, Cmd+Shift+M handling, live preparation status, and Sato Local setup popover used by both composers and the menu panel. |
+| `LocalSpeechPreparationPresentationTests.swift` | ~55 | Focused tests for preparation-stage ordering, elapsed-time presentation, and the setup timeout. |
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide Ctrl+Option monitor. Owns the listen-only `CGEvent` tap and publishes screenshot-shortcut press/release transitions. |
 | `ClaudeAPI.swift` | ~291 | Claude vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
 | `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |

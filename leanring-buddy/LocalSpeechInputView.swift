@@ -8,6 +8,8 @@
 import SwiftUI
 
 struct LocalSpeechInputButton: View {
+    static let keyboardShortcutDescription = "Cmd + Shift + M"
+
     @ObservedObject private var speechTranscriptionManager: LocalSpeechTranscriptionManager
     @Binding private var inputText: String
 
@@ -48,9 +50,11 @@ struct LocalSpeechInputButton: View {
         .buttonStyle(.plain)
         .pointerCursor()
         .disabled(isButtonDisabled)
-        .help(buttonHelpText)
+        .keyboardShortcut("m", modifiers: [.command, .shift])
+        .help("\(buttonHelpText) (\(Self.keyboardShortcutDescription))")
         .accessibilityLabel(buttonAccessibilityLabel)
         .accessibilityValue(buttonAccessibilityValue)
+        .accessibilityHint("Press Command Shift M while a prompt is open.")
         .onDisappear {
             speechOperationTask?.cancel()
             speechTranscriptionManager.cancelActiveSpeechOperation()
@@ -60,7 +64,7 @@ struct LocalSpeechInputButton: View {
     @ViewBuilder
     private var buttonContent: some View {
         switch speechTranscriptionManager.operationState {
-        case .loadingModel, .requestingMicrophonePermission, .transcribing:
+        case .requestingMicrophonePermission, .transcribing:
             ProgressView()
                 .controlSize(.small)
                 .tint(foregroundColor)
@@ -83,9 +87,24 @@ struct LocalSpeechInputButton: View {
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(DS.Colors.warningText)
             case .downloaded:
-                Image(systemName: "mic.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(foregroundColor)
+                switch speechTranscriptionManager.selectedModelPreparationState {
+                case .notPrepared:
+                    Image(systemName: "cpu")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(foregroundColor)
+                case .preparing, .cancelling:
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(foregroundColor)
+                case .ready:
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(foregroundColor)
+                case .failed:
+                    Image(systemName: "exclamationmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(DS.Colors.warningText)
+                }
             }
         }
     }
@@ -103,17 +122,20 @@ struct LocalSpeechInputButton: View {
         }
 
         switch speechTranscriptionManager.operationState {
-        case .loadingModel, .requestingMicrophonePermission, .transcribing:
+        case .requestingMicrophonePermission, .transcribing:
             return true
-        case .idle, .recording:
+        case .recording:
             return false
+        case .idle:
+            guard speechTranscriptionManager.selectedModelDownloadState == .downloaded else {
+                return false
+            }
+            return speechTranscriptionManager.selectedModelPreparationState.isPreparingOrCancelling
         }
     }
 
     private var buttonHelpText: String {
         switch speechTranscriptionManager.operationState {
-        case .loadingModel:
-            return "Preparing Sato Local"
         case .requestingMicrophonePermission:
             return "Waiting for microphone access"
         case .recording:
@@ -127,7 +149,18 @@ struct LocalSpeechInputButton: View {
             case .downloading:
                 return "Cancel model download"
             case .downloaded:
-                return "Speak with Sato Local"
+                switch speechTranscriptionManager.selectedModelPreparationState {
+                case .notPrepared:
+                    return "Set up Sato Local"
+                case .preparing:
+                    return "Setting up Sato Local"
+                case .cancelling:
+                    return "Stopping Sato Local setup"
+                case .ready:
+                    return "Speak with Sato Local"
+                case .failed:
+                    return "Retry Sato Local setup"
+                }
             }
         }
     }
@@ -170,9 +203,16 @@ struct LocalSpeechInputButton: View {
         case .downloading:
             speechTranscriptionManager.cancelSelectedModelDownload()
         case .downloaded:
-            speechOperationTask?.cancel()
-            speechOperationTask = Task {
-                await speechTranscriptionManager.startRecording()
+            switch speechTranscriptionManager.selectedModelPreparationState {
+            case .notPrepared, .failed:
+                speechTranscriptionManager.prepareSelectedModel()
+            case .preparing, .cancelling:
+                break
+            case .ready:
+                speechOperationTask?.cancel()
+                speechOperationTask = Task {
+                    await speechTranscriptionManager.startRecording()
+                }
             }
         }
     }
@@ -193,8 +233,23 @@ struct LocalSpeechCompactStatusView: View {
     @ObservedObject var speechTranscriptionManager: LocalSpeechTranscriptionManager
     let textColor: Color
 
+    @ViewBuilder
     var body: some View {
-        if let compactStatusMessage = speechTranscriptionManager.compactStatusMessage {
+        if speechTranscriptionManager.selectedModelPreparationState.startedAt != nil,
+           speechTranscriptionManager.operationState == .idle {
+            TimelineView(.periodic(from: Date(), by: 1)) { timelineContext in
+                statusContent(currentDate: timelineContext.date)
+            }
+        } else {
+            statusContent(currentDate: Date())
+        }
+    }
+
+    @ViewBuilder
+    private func statusContent(currentDate: Date) -> some View {
+        if let compactStatusMessage = speechTranscriptionManager.compactStatusMessage(
+            at: currentDate
+        ) {
             HStack(alignment: .firstTextBaseline, spacing: 5) {
                 Image(systemName: statusSymbolName)
                     .font(.system(size: 9, weight: .semibold))
@@ -204,9 +259,51 @@ struct LocalSpeechCompactStatusView: View {
                     .font(.system(size: 10))
                     .foregroundColor(statusColor)
                     .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 3)
+
+                statusActionButton
             }
-            .accessibilityElement(children: .combine)
+            .accessibilityElement(children: .contain)
         }
+    }
+
+    @ViewBuilder
+    private var statusActionButton: some View {
+        if speechTranscriptionManager.operationState == .idle,
+           speechTranscriptionManager.selectedModelDownloadState == .downloaded,
+           speechTranscriptionManager.lastErrorMessage == nil {
+            switch speechTranscriptionManager.selectedModelPreparationState {
+            case .notPrepared:
+                compactActionButton(
+                    title: "Set Up",
+                    action: speechTranscriptionManager.prepareSelectedModel
+                )
+            case .preparing:
+                compactActionButton(
+                    title: "Cancel",
+                    action: speechTranscriptionManager.cancelSelectedModelPreparation
+                )
+            case .failed:
+                compactActionButton(
+                    title: "Retry",
+                    action: speechTranscriptionManager.prepareSelectedModel
+                )
+            case .cancelling, .ready:
+                EmptyView()
+            }
+        }
+    }
+
+    private func compactActionButton(
+        title: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(title, action: action)
+            .font(.system(size: 10, weight: .semibold))
+            .buttonStyle(.plain)
+            .foregroundColor(DS.Colors.accentText)
+            .pointerCursor()
     }
 
     private var statusSymbolName: String {
@@ -219,7 +316,7 @@ struct LocalSpeechCompactStatusView: View {
             return "waveform"
         case .transcribing:
             return "text.magnifyingglass"
-        case .loadingModel, .requestingMicrophonePermission:
+        case .requestingMicrophonePermission:
             return "hourglass"
         case .idle:
             switch speechTranscriptionManager.selectedModelDownloadState {
@@ -230,7 +327,18 @@ struct LocalSpeechCompactStatusView: View {
             case .notDownloaded:
                 return "lock.shield"
             case .downloaded:
-                return "checkmark.circle"
+                switch speechTranscriptionManager.selectedModelPreparationState {
+                case .notPrepared:
+                    return "cpu"
+                case .preparing:
+                    return "gearshape.2"
+                case .cancelling:
+                    return "xmark.circle"
+                case .ready:
+                    return "checkmark.circle"
+                case .failed:
+                    return "exclamationmark.triangle.fill"
+                }
             }
         }
     }
@@ -240,6 +348,9 @@ struct LocalSpeechCompactStatusView: View {
             return DS.Colors.warningText
         }
         if case .failed = speechTranscriptionManager.selectedModelDownloadState {
+            return DS.Colors.warningText
+        }
+        if case .failed = speechTranscriptionManager.selectedModelPreparationState {
             return DS.Colors.warningText
         }
         if speechTranscriptionManager.isRecording {
@@ -307,9 +418,33 @@ struct LocalSpeechSettingsRow: View {
                 .monospacedDigit()
                 .foregroundColor(DS.Colors.accentText)
         case .downloaded:
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 11))
-                .foregroundColor(DS.Colors.success)
+            switch speechTranscriptionManager.selectedModelPreparationState {
+            case .notPrepared:
+                Text("Set Up")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(DS.Colors.accentText)
+            case .preparing(let stage, _):
+                HStack(spacing: 4) {
+                    ProgressView()
+                        .controlSize(.mini)
+
+                    Text("\(stage.rawValue)/\(LocalSpeechModelPreparationStage.totalStageCount)")
+                        .font(.system(size: 10, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundColor(DS.Colors.textSecondary)
+                }
+            case .cancelling:
+                ProgressView()
+                    .controlSize(.mini)
+            case .ready:
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.success)
+            case .failed:
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.warningText)
+            }
         case .failed:
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 11))
@@ -446,22 +581,7 @@ private struct LocalSpeechSettingsView: View {
                 )
             }
         case .downloaded:
-            HStack {
-                Label("Ready on this Mac", systemImage: "checkmark.circle.fill")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(DS.Colors.success)
-
-                Spacer()
-
-                Button("Remove") {
-                    isConfirmingModelRemoval = true
-                }
-                .font(.system(size: 10, weight: .medium))
-                .buttonStyle(.plain)
-                .foregroundColor(DS.Colors.destructiveText)
-                .pointerCursor()
-                .disabled(!speechTranscriptionManager.canChangeSelectedModel)
-            }
+            modelPreparationStatus
         case .failed(let message):
             VStack(alignment: .leading, spacing: 8) {
                 Label(message, systemImage: "exclamationmark.triangle.fill")
@@ -479,10 +599,118 @@ private struct LocalSpeechSettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private var modelPreparationStatus: some View {
+        switch speechTranscriptionManager.selectedModelPreparationState {
+        case .notPrepared:
+            VStack(alignment: .leading, spacing: 8) {
+                Text("The model is downloaded. Finish one-time setup before using voice input.")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                modelActionButton(
+                    title: "Finish Setup",
+                    systemImage: "cpu",
+                    isDestructive: false,
+                    action: speechTranscriptionManager.prepareSelectedModel
+                )
+            }
+        case .preparing(let stage, let startedAt):
+            TimelineView(.periodic(from: Date(), by: 1)) { timelineContext in
+                VStack(alignment: .leading, spacing: 7) {
+                    ProgressView(
+                        value: Double(stage.completedStageCount),
+                        total: Double(LocalSpeechModelPreparationStage.totalStageCount)
+                    )
+                    .tint(DS.Colors.accentText)
+
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(stage.displayName)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(DS.Colors.textPrimary)
+
+                        Spacer()
+
+                        Text(
+                            LocalSpeechTranscriptionManager.elapsedPreparationTimeText(
+                                since: startedAt,
+                                currentDate: timelineContext.date
+                            )
+                        )
+                        .font(.system(size: 10))
+                        .monospacedDigit()
+                        .foregroundColor(DS.Colors.textSecondary)
+                    }
+
+                    Text("Step \(stage.rawValue) of \(LocalSpeechModelPreparationStage.totalStageCount). You can keep using Sato while this finishes.")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    modelActionButton(
+                        title: "Cancel Setup",
+                        systemImage: "xmark",
+                        isDestructive: false,
+                        isDisabled: false,
+                        action: speechTranscriptionManager.cancelSelectedModelPreparation
+                    )
+                }
+            }
+        case .cancelling:
+            HStack(spacing: 7) {
+                ProgressView()
+                    .controlSize(.small)
+
+                Text("Stopping setup safely…")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+        case .ready:
+            HStack {
+                Label("Ready on this Mac", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.success)
+
+                Spacer()
+
+                removeModelButton
+            }
+        case .failed(let message):
+            VStack(alignment: .leading, spacing: 8) {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.warningText)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                modelActionButton(
+                    title: "Retry Setup",
+                    systemImage: "arrow.clockwise",
+                    isDestructive: false,
+                    action: speechTranscriptionManager.prepareSelectedModel
+                )
+
+                removeModelButton
+            }
+        }
+    }
+
+    private var removeModelButton: some View {
+        Button("Remove") {
+            isConfirmingModelRemoval = true
+        }
+        .font(.system(size: 10, weight: .medium))
+        .buttonStyle(.plain)
+        .foregroundColor(DS.Colors.destructiveText)
+        .pointerCursor()
+        .disabled(!speechTranscriptionManager.canChangeSelectedModel)
+    }
+
     private func modelActionButton(
         title: String,
         systemImage: String,
         isDestructive: Bool,
+        isDisabled: Bool? = nil,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -502,6 +730,6 @@ private struct LocalSpeechSettingsView: View {
         }
         .buttonStyle(.plain)
         .pointerCursor()
-        .disabled(!speechTranscriptionManager.canChangeSelectedModel)
+        .disabled(isDisabled ?? !speechTranscriptionManager.canChangeSelectedModel)
     }
 }

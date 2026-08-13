@@ -1542,6 +1542,10 @@ struct CompanionPanelView: View {
     private var hotkeyLabelsSection: some View {
         VStack(spacing: 4) {
             hotkeyLabelRow(actionName: "Ask", shortcut: "Ctrl + Option")
+            hotkeyLabelRow(
+                actionName: "Voice in prompt",
+                shortcut: LocalSpeechInputButton.keyboardShortcutDescription
+            )
         }
     }
 
