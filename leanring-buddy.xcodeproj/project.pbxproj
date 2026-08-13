@@ -469,7 +469,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 10204;
+				CURRENT_PROJECT_VERSION = 10205;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = UP52GQK38V;
 				ENABLE_APP_SANDBOX = NO;
@@ -489,7 +489,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.2.4;
+				MARKETING_VERSION = 1.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = host.sato.desktop;
 				PRODUCT_MODULE_NAME = leanring_buddy;
 				PRODUCT_NAME = Sato;
@@ -514,7 +514,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 10204;
+				CURRENT_PROJECT_VERSION = 10205;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = UP52GQK38V;
 				ENABLE_APP_SANDBOX = NO;
@@ -534,7 +534,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.2.4;
+				MARKETING_VERSION = 1.2.5;
 				PRODUCT_BUNDLE_IDENTIFIER = host.sato.desktop;
 				PRODUCT_MODULE_NAME = leanring_buddy;
 				PRODUCT_NAME = Sato;
