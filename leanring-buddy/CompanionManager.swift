@@ -56,6 +56,142 @@ enum ChatSidebarMessageRole: String, Codable {
     case assistant
 }
 
+enum CompanionSleepPolicy {
+    static func shouldRequestAutomaticSleep(
+        isEnabled: Bool,
+        systemIdleDuration: TimeInterval,
+        inactivityDuration: TimeInterval
+    ) -> Bool {
+        isEnabled && systemIdleDuration >= inactivityDuration
+    }
+
+    static func canSuspendVisualRuntime(
+        hasCompletedOnboarding: Bool,
+        allPermissionsGranted: Bool,
+        isMenuBarPanelVisible: Bool,
+        assistFlowIsInactive: Bool,
+        isResponseStreaming: Bool,
+        isChatStreaming: Bool,
+        isCapturingScreenshot: Bool,
+        isRequestingScreenContent: Bool,
+        isSpeechInputBusy: Bool,
+        isOnboardingVisible: Bool,
+        isOnboardingAudioPlaying: Bool,
+        hasPendingLifecycleResumeIntent: Bool,
+        isSpriteResting: Bool
+    ) -> Bool {
+        hasCompletedOnboarding
+            && allPermissionsGranted
+            && !isMenuBarPanelVisible
+            && assistFlowIsInactive
+            && !isResponseStreaming
+            && !isChatStreaming
+            && !isCapturingScreenshot
+            && !isRequestingScreenContent
+            && !isSpeechInputBusy
+            && !isOnboardingVisible
+            && !isOnboardingAudioPlaying
+            && !hasPendingLifecycleResumeIntent
+            && isSpriteResting
+    }
+
+    static func shouldRestoreNormalOverlayAfterPermissionsBecomeFullyGranted(
+        managerHasFinishedStarting: Bool,
+        previouslyHadAllPermissions: Bool,
+        hasCompletedOnboarding: Bool,
+        allPermissionsGranted: Bool,
+        isOverlayVisible: Bool,
+        isStealthModeEnabled: Bool,
+        isSleeping: Bool
+    ) -> Bool {
+        managerHasFinishedStarting
+            && !previouslyHadAllPermissions
+            && hasCompletedOnboarding
+            && allPermissionsGranted
+            && !isOverlayVisible
+            && !isStealthModeEnabled
+            && !isSleeping
+    }
+
+    static func hasReachedDozeThreshold(
+        meaningfulSatoInactivityDuration: TimeInterval,
+        dozeInactivityDuration: TimeInterval
+    ) -> Bool {
+        meaningfulSatoInactivityDuration >= dozeInactivityDuration
+    }
+
+    static func nextDozeEvaluationDelay(
+        meaningfulSatoInactivityDuration: TimeInterval,
+        dozeInactivityDuration: TimeInterval,
+        canDozeNow: Bool,
+        blockedRetryDuration: TimeInterval
+    ) -> TimeInterval? {
+        let remainingInactivityDuration = dozeInactivityDuration
+            - meaningfulSatoInactivityDuration
+        if remainingInactivityDuration > 0 {
+            return remainingInactivityDuration
+        }
+
+        if !canDozeNow {
+            return max(blockedRetryDuration, 0.1)
+        }
+
+        return nil
+    }
+
+    static func canDozeVisualRuntime(
+        isAutomaticSleepEnabled: Bool,
+        isNormalOverlayVisible: Bool,
+        isVisualRuntimePaused: Bool,
+        isMenuBarPanelVisible: Bool,
+        assistFlowIsInactive: Bool,
+        isResponseStreaming: Bool,
+        isChatStreaming: Bool,
+        isCapturingScreenshot: Bool,
+        isRequestingScreenContent: Bool,
+        isSpeechInputBusy: Bool,
+        isOnboardingVisible: Bool,
+        isOnboardingAudioPlaying: Bool,
+        isSpriteResting: Bool
+    ) -> Bool {
+        isAutomaticSleepEnabled
+            && isNormalOverlayVisible
+            && !isVisualRuntimePaused
+            && !isMenuBarPanelVisible
+            && assistFlowIsInactive
+            && !isResponseStreaming
+            && !isChatStreaming
+            && !isCapturingScreenshot
+            && !isRequestingScreenContent
+            && !isSpeechInputBusy
+            && !isOnboardingVisible
+            && !isOnboardingAudioPlaying
+            && isSpriteResting
+    }
+
+    static func shouldRemainPausedForLifecycle(
+        activeLifecycleSuspensionReasonCount: Int
+    ) -> Bool {
+        activeLifecycleSuspensionReasonCount > 0
+    }
+}
+
+/// Global input can arrive in a burst before the first main-actor wake runs.
+/// Claiming the gate in the event callback ensures only one wake task is queued.
+private final class CompanionWakeEventOneShotGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var hasBeenClaimed = false
+
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard !hasBeenClaimed else { return false }
+        hasBeenClaimed = true
+        return true
+    }
+}
+
 @MainActor
 final class CompanionManager: ObservableObject {
     @Published private(set) var hasAccessibilityPermission = false
@@ -90,6 +226,11 @@ final class CompanionManager: ObservableObject {
 
     /// True while Ctrl+Option is capturing a screenshot for the open sidebar conversation.
     private var isCapturingFollowUpScreenshot = false
+
+    /// True during the asynchronous ScreenCaptureKit request that precedes
+    /// both initial and follow-up region selection.
+    private var isCapturingScreenshotForSelection = false
+    private var screenshotCaptureTask: Task<Void, Never>?
 
     /// Assist-screen frame to restore after a follow-up screenshot capture finishes,
     /// so the open chat sidebar stays on its original display.
@@ -129,6 +270,8 @@ final class CompanionManager: ObservableObject {
     func openChatSidebar() {
         guard assistFlowPhase == .showingResponse else { return }
         guard !chatSidebarMessages.isEmpty else { return }
+        recordMeaningfulSatoActivity()
+        cancelResponseDismissTask()
         assistFlowPhase = .chatSidebar
         print("💬 Chat sidebar opened with \(chatSidebarMessages.count) messages")
     }
@@ -140,6 +283,7 @@ final class CompanionManager: ObservableObject {
             return
         }
 
+        cancelResponseDismissTask()
         currentResponseTask?.cancel()
         currentResponseTask = nil
         NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
@@ -197,6 +341,9 @@ final class CompanionManager: ObservableObject {
         else {
             return
         }
+
+        recordMeaningfulSatoActivity()
+        cancelResponseDismissTask()
 
         let previousConversationMessages = chatSidebarMessages
         let followUpScreenshotData = pendingFollowUpScreenshotData
@@ -304,6 +451,11 @@ final class CompanionManager: ObservableObject {
 
     /// Closes the chat sidebar and returns the sprite to patrol.
     func closeChatSidebar() {
+        recordMeaningfulSatoActivity()
+        cancelResponseDismissTask()
+        screenshotCaptureTask?.cancel()
+        screenshotCaptureTask = nil
+        isCapturingScreenshotForSelection = false
         localSpeechTranscriptionManager.cancelActiveSpeechOperation()
         assistFlowPhase = .inactive
         chatSidebarMessages = []
@@ -322,6 +474,7 @@ final class CompanionManager: ObservableObject {
         currentResponseTask = nil
 
         if isStealthModeEnabled {
+            scheduleTransientHideIfNeeded()
             return
         }
 
@@ -334,6 +487,8 @@ final class CompanionManager: ObservableObject {
                 targetPosition: nil,
                 screenFrame: screenFrame
             )
+        } else {
+            scheduleDozeEvaluation()
         }
     }
 
@@ -386,6 +541,8 @@ final class CompanionManager: ObservableObject {
     @Published var onboardingVideoOpacity: Double = 0.0
     private var onboardingVideoEndObserver: NSObjectProtocol?
     private var onboardingDemoTimeObserver: Any?
+    private var onboardingVideoAudioFadeTimer: Timer?
+    private var shouldStartOnboardingVideoAfterLifecyclePause = false
 
     // MARK: - Onboarding Prompt Bubble
 
@@ -393,11 +550,27 @@ final class CompanionManager: ObservableObject {
     @Published var onboardingPromptText: String = ""
     @Published var onboardingPromptOpacity: Double = 0.0
     @Published var showOnboardingPrompt: Bool = false
+    private var onboardingPromptStreamTimer: Timer?
+    private var onboardingPromptDismissTask: Task<Void, Never>?
+    private var onboardingPromptDismissGeneration = 0
+    private var shouldResumeOnboardingPromptAfterLifecyclePause = false
 
     // MARK: - Onboarding Music
 
     private var onboardingMusicPlayer: AVAudioPlayer?
     private var onboardingMusicFadeTimer: Timer?
+    private enum OnboardingMusicTimerPhase {
+        case waitingToFade
+        case fadingOut
+    }
+    private var onboardingMusicTimerPhase: OnboardingMusicTimerPhase?
+    private var onboardingMusicTimerNextFireDate: Date?
+    private var onboardingMusicTimerRemainingDelayAfterLifecyclePause: TimeInterval?
+    private var onboardingMusicTimerGeneration = 0
+    private var onboardingMusicFadeStepsRemaining = 0
+    private var onboardingMusicFadeVolumeDecrement: Float = 0
+    private var shouldResumeOnboardingVideoAfterLifecyclePause = false
+    private var shouldResumeOnboardingMusicAfterLifecyclePause = false
 
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
@@ -406,6 +579,7 @@ final class CompanionManager: ObservableObject {
     let conversationStore = ConversationStore()
     let providerManager = ProviderManager()
     let localSpeechTranscriptionManager = LocalSpeechTranscriptionManager()
+    let petdexSpriteCatalog = PetdexSpriteCatalog()
 
     /// Name of the currently active context profile, for display in the speech bubble header.
     var activeContextProfileName: String? {
@@ -424,13 +598,59 @@ final class CompanionManager: ObservableObject {
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
+    private var responseDismissTask: Task<Void, Never>?
 
     private var shortcutTransitionCancellable: AnyCancellable?
+    private var spriteStateCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
+    private var managerHasFinishedStarting = false
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
+
+    // MARK: - Battery-Saving Sleep
+
+    private enum VisualSuspensionReason: Hashable {
+        case automaticIdle
+        case systemSleep
+        case screensAsleep
+        case sessionInactive
+
+        var isLifecycleReason: Bool {
+            self != .automaticIdle
+        }
+    }
+
+    private static let automaticSleepEnabledUserDefaultsKey = "automaticSleepEnabled"
+    static let automaticSleepInactivityDuration: TimeInterval = 15 * 60
+    static let dozeInactivityDuration: TimeInterval = 60
+    static let blockedDozeEligibilityRetryDuration: TimeInterval = 30
+    private static let automaticSleepCheckInterval: TimeInterval = 30
+    private static let completedResponseDismissDelay: TimeInterval = 15
+
+    @Published private(set) var isSleeping = false
+    @Published private(set) var isDozing = false
+    @Published private(set) var isVisualRuntimePaused = false
+    @Published private(set) var isAutomaticSleepEnabled: Bool = {
+        if UserDefaults.standard.object(forKey: automaticSleepEnabledUserDefaultsKey) == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: automaticSleepEnabledUserDefaultsKey)
+    }()
+
+    private var automaticSleepCheckTimer: Timer?
+    private var dozeEvaluationTimer: Timer?
+    private var sleepingWakeEventMonitor: Any?
+    private var sleepingWakeEventOneShotGate: CompanionWakeEventOneShotGate?
+    private var workspaceSleepObservers: [NSObjectProtocol] = []
+    private var activeVisualSuspensionReasons: Set<VisualSuspensionReason> = []
+    private var isMenuBarPanelVisible = false
+    private var isPermissionPanelVisible = false
+    private var shouldRestoreVisualRuntimeAfterSleep = false
+    private var shouldRestoreVisualRuntimeAfterLifecyclePause = false
+    private var shouldResumeTransientHideAfterLifecyclePause = false
+    private var lastMeaningfulSatoActivityDate = Date()
 
     /// True when all required permissions (accessibility, screen recording,
     /// screen content) are granted. Used by the panel to show a single "all good" state.
@@ -456,18 +676,165 @@ final class CompanionManager: ObservableObject {
         UserDefaults.standard.set(enabled, forKey: "stealthModeEnabled")
 
         if enabled {
-            // Cancel any in-progress assist flow, then hide the sprite
+            // Stealth mode is fully dormant while inactive. Removing the overlay
+            // also removes the per-display 60 Hz cursor tracking timers.
             cancelAssistFlow()
-            spriteAnimationManager.stopAnimationTimer()
+            transientHideTask?.cancel()
+            stopDozeEvaluationTimer()
+            isDozing = false
+            spriteAnimationManager.setPowerMode(.suspended)
             spriteAnimationManager.isVisible = false
+            overlayWindowManager.hideOverlay()
+            isOverlayVisible = false
         } else {
-            // Show the sprite and start the walking patrol
-            if isOverlayVisible {
+            // Show the sprite and start the walking patrol unless another sleep
+            // reason still owns the visual runtime.
+            if !isSleeping,
+               !isVisualRuntimePaused,
+               hasCompletedOnboarding,
+               allPermissionsGranted {
+                overlayWindowManager.hasShownOverlayBefore = true
+                overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+                isOverlayVisible = true
                 let mainScreenFrame = NSScreen.main?.frame ?? .zero
                 spriteAnimationManager.transitionTo(.resting, targetPosition: nil, screenFrame: mainScreenFrame)
-                spriteAnimationManager.startAnimationTimer()
+                spriteAnimationManager.setPowerMode(.active)
+                scheduleDozeEvaluation()
             }
         }
+    }
+
+    // MARK: - Sprite Selection
+
+    private static let activeSpriteUserDefaultsKey = "activeSpriteDirectory"
+    private static let supportedBundledSpriteDirectories: Set<String> = [
+        "max-animations",
+        "sky-animations",
+        "lexi-animations",
+        "rover-animations",
+        "paris-animations",
+    ]
+    private var petdexSpriteSelectionTask: Task<Void, Never>?
+    private var petdexSpriteRestoreTask: Task<Void, Never>?
+
+    func selectBundledSprite(directoryName: String) {
+        guard Self.supportedBundledSpriteDirectories.contains(directoryName) else {
+            return
+        }
+
+        recordMeaningfulSatoActivity()
+        cancelPendingPetdexSpriteRestore()
+        cancelPendingPetdexSpriteSelection()
+        spriteAnimationManager.switchSpriteAssets(directoryName: directoryName)
+        UserDefaults.standard.set(directoryName, forKey: Self.activeSpriteUserDefaultsKey)
+    }
+
+    func startPetdexSpriteSelection(
+        _ pet: PetdexPet,
+        completion: @escaping @MainActor (Bool) -> Void
+    ) {
+        recordMeaningfulSatoActivity()
+        cancelPendingPetdexSpriteRestore()
+        cancelPendingPetdexSpriteSelection()
+
+        petdexSpriteSelectionTask = Task { [weak self] in
+            guard let self else { return }
+            let didSelectPet = await self.installAndSelectPetdexSprite(pet)
+            guard !Task.isCancelled else { return }
+            self.petdexSpriteSelectionTask = nil
+            if didSelectPet {
+                self.recordMeaningfulSatoActivity()
+            }
+            completion(didSelectPet)
+        }
+    }
+
+    func cancelPendingPetdexSpriteSelection() {
+        petdexSpriteSelectionTask?.cancel()
+        petdexSpriteSelectionTask = nil
+    }
+
+    private func cancelPendingPetdexSpriteRestore() {
+        petdexSpriteRestoreTask?.cancel()
+        petdexSpriteRestoreTask = nil
+    }
+
+    private func installAndSelectPetdexSprite(_ pet: PetdexPet) async -> Bool {
+        do {
+            let installedSprite = try await petdexSpriteCatalog.install(pet)
+            try Task.checkCancellation()
+            try await spriteAnimationManager.switchToPetdexSprite(
+                metadata: installedSprite.metadata,
+                spritesheetURL: installedSprite.spritesheetURL
+            )
+            try Task.checkCancellation()
+            UserDefaults.standard.set(
+                "petdex:\(installedSprite.metadata.slug)",
+                forKey: Self.activeSpriteUserDefaultsKey
+            )
+            petdexSpriteCatalog.removeCachedSprites(
+                exceptPetSlug: installedSprite.metadata.slug
+            )
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            petdexSpriteCatalog.recordInstallationError(error.localizedDescription)
+            print("⚠️ Sprite: Failed to activate Petdex pet \(pet.slug): \(error)")
+            return false
+        }
+    }
+
+    private func restoreSavedSpriteSelection() {
+        let savedSpriteIdentifier = UserDefaults.standard.string(
+            forKey: Self.activeSpriteUserDefaultsKey
+        ) ?? "max-animations"
+
+        if savedSpriteIdentifier.hasPrefix("petdex:") {
+            let savedPetSlug = String(savedSpriteIdentifier.dropFirst("petdex:".count))
+            do {
+                let cachedSprite = try petdexSpriteCatalog.cachedSprite(petSlug: savedPetSlug)
+
+                // Keep a bundled sprite ready for the first overlay frame while
+                // cached-atlas I/O and ImageIO decoding run away from MainActor.
+                spriteAnimationManager.preloadAllAnimations()
+                petdexSpriteRestoreTask?.cancel()
+                petdexSpriteRestoreTask = Task { [weak self] in
+                    guard let self else { return }
+                    do {
+                        try await self.spriteAnimationManager.switchToPetdexSprite(
+                            metadata: cachedSprite.metadata,
+                            spritesheetURL: cachedSprite.spritesheetURL
+                        )
+                        try Task.checkCancellation()
+                        self.petdexSpriteRestoreTask = nil
+                    } catch is CancellationError {
+                        self.petdexSpriteRestoreTask = nil
+                    } catch {
+                        guard !Task.isCancelled else { return }
+                        self.petdexSpriteRestoreTask = nil
+                        UserDefaults.standard.set(
+                            "max-animations",
+                            forKey: Self.activeSpriteUserDefaultsKey
+                        )
+                        print("⚠️ Sprite: Could not restore Petdex pet \(savedPetSlug): \(error)")
+                    }
+                }
+                return
+            } catch {
+                print("⚠️ Sprite: Could not restore Petdex pet \(savedPetSlug): \(error)")
+            }
+        } else if Self.supportedBundledSpriteDirectories.contains(savedSpriteIdentifier) {
+            if savedSpriteIdentifier == "max-animations" {
+                spriteAnimationManager.preloadAllAnimations()
+            } else {
+                spriteAnimationManager.switchSpriteAssets(directoryName: savedSpriteIdentifier)
+            }
+            return
+        }
+
+        spriteAnimationManager.switchSpriteAssets(directoryName: "max-animations")
+        UserDefaults.standard.set("max-animations", forKey: Self.activeSpriteUserDefaultsKey)
     }
 
     /// Whether the user has completed onboarding at least once. Persisted
@@ -507,35 +874,31 @@ final class CompanionManager: ObservableObject {
         refreshAllPermissions()
         localSpeechTranscriptionManager.refreshMicrophonePermission()
         print("🔑 Sato start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
-        startPermissionPolling()
         bindShortcutTransitions()
+        bindSpritePowerTransitions()
 
         // Preload all sprite GIF frames at launch so animation playback
         // never hitches waiting on disk I/O. Restore saved sprite preference.
-        let savedSpriteDirectory = UserDefaults.standard.string(forKey: "activeSpriteDirectory") ?? "max-animations"
-        if savedSpriteDirectory != "max-animations" {
-            spriteAnimationManager.switchSpriteAssets(directoryName: savedSpriteDirectory)
-        } else {
-            spriteAnimationManager.preloadAllAnimations()
-        }
+        restoreSavedSpriteSelection()
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
         // were revoked (e.g. signing change), don't show the cursor — the
         // panel will show the permissions UI instead.
-        if hasCompletedOnboarding && allPermissionsGranted {
+        if hasCompletedOnboarding && allPermissionsGranted && !isStealthModeEnabled {
             overlayWindowManager.hasShownOverlayBefore = true
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
 
-            // In stealth mode the overlay is up (for speech bubbles etc.) but
-            // the sprite itself stays hidden. Otherwise show it and patrol.
-            if !isStealthModeEnabled {
-                let mainScreenFrame = NSScreen.main?.frame ?? .zero
-                spriteAnimationManager.transitionTo(.resting, targetPosition: nil, screenFrame: mainScreenFrame)
-                spriteAnimationManager.startAnimationTimer()
-            }
+            let mainScreenFrame = NSScreen.main?.frame ?? .zero
+            spriteAnimationManager.transitionTo(.resting, targetPosition: nil, screenFrame: mainScreenFrame)
+            spriteAnimationManager.setPowerMode(.active)
         }
+
+        // Start idle evaluation only after the initial visual runtime has been
+        // restored so an already-idle session can suspend everything atomically.
+        managerHasFinishedStarting = true
+        startEnergySavingMonitoring()
     }
 
     /// Called by BlueCursorView after the buddy finishes its pointing
@@ -543,6 +906,8 @@ final class CompanionManager: ObservableObject {
     /// Triggers the onboarding sequence — dismisses the panel and restarts
     /// the overlay so the welcome animation and intro video play.
     func triggerOnboarding() {
+        recordMeaningfulSatoActivity()
+
         // Post notification so the panel manager can dismiss the panel
         NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
 
@@ -561,13 +926,15 @@ final class CompanionManager: ObservableObject {
         isOverlayVisible = true
         let mainScreenFrame = NSScreen.main?.frame ?? .zero
         spriteAnimationManager.transitionTo(.resting, targetPosition: nil, screenFrame: mainScreenFrame)
-        spriteAnimationManager.startAnimationTimer()
+        spriteAnimationManager.setPowerMode(.active)
+        scheduleDozeEvaluation()
     }
 
     /// Replays the onboarding experience from the "Watch Onboarding Again"
     /// footer link. Same flow as triggerOnboarding but the cursor overlay
     /// is already visible so we just restart the welcome animation and video.
     func replayOnboarding() {
+        recordMeaningfulSatoActivity()
         NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
         ClickyAnalytics.trackOnboardingReplayed()
         startOnboardingMusic()
@@ -577,12 +944,12 @@ final class CompanionManager: ObservableObject {
         isOverlayVisible = true
         let mainScreenFrame = NSScreen.main?.frame ?? .zero
         spriteAnimationManager.transitionTo(.resting, targetPosition: nil, screenFrame: mainScreenFrame)
-        spriteAnimationManager.startAnimationTimer()
+        spriteAnimationManager.setPowerMode(.active)
+        scheduleDozeEvaluation()
     }
 
     private func stopOnboardingMusic() {
-        onboardingMusicFadeTimer?.invalidate()
-        onboardingMusicFadeTimer = nil
+        resetOnboardingMusicTimerState()
         onboardingMusicPlayer?.stop()
         onboardingMusicPlayer = nil
     }
@@ -601,34 +968,124 @@ final class CompanionManager: ObservableObject {
             self.onboardingMusicPlayer = player
 
             // After 1m 30s, fade the music out over 3s
-            onboardingMusicFadeTimer = Timer.scheduledTimer(withTimeInterval: 90.0, repeats: false) { [weak self] _ in
-                self?.fadeOutOnboardingMusic()
-            }
+            onboardingMusicTimerPhase = .waitingToFade
+            scheduleOnboardingMusicTimer(after: 90)
         } catch {
             print("⚠️ Sato: Failed to play onboarding music: \(error)")
         }
     }
 
     private func fadeOutOnboardingMusic() {
-        guard let player = onboardingMusicPlayer else { return }
+        guard let player = onboardingMusicPlayer else {
+            resetOnboardingMusicTimerState()
+            scheduleDozeEvaluation()
+            return
+        }
 
-        let fadeSteps = 30
-        let fadeDuration: Double = 3.0
-        let stepInterval = fadeDuration / Double(fadeSteps)
-        let volumeDecrement = player.volume / Float(fadeSteps)
-        var stepsRemaining = fadeSteps
+        onboardingMusicFadeStepsRemaining = 30
+        onboardingMusicFadeVolumeDecrement = player.volume
+            / Float(onboardingMusicFadeStepsRemaining)
+        onboardingMusicTimerPhase = .fadingOut
+        scheduleOnboardingMusicTimer(after: 0.1)
+    }
 
-        onboardingMusicFadeTimer = Timer.scheduledTimer(withTimeInterval: stepInterval, repeats: true) { [weak self] timer in
-            stepsRemaining -= 1
-            player.volume -= volumeDecrement
+    private func performNextOnboardingMusicFadeStep() {
+        guard let player = onboardingMusicPlayer,
+              onboardingMusicFadeStepsRemaining > 0 else {
+            resetOnboardingMusicTimerState()
+            scheduleDozeEvaluation()
+            return
+        }
 
-            if stepsRemaining <= 0 {
-                timer.invalidate()
-                player.stop()
-                self?.onboardingMusicPlayer = nil
-                self?.onboardingMusicFadeTimer = nil
+        onboardingMusicFadeStepsRemaining -= 1
+        player.volume = max(0, player.volume - onboardingMusicFadeVolumeDecrement)
+
+        if onboardingMusicFadeStepsRemaining == 0 {
+            player.stop()
+            onboardingMusicPlayer = nil
+            resetOnboardingMusicTimerState()
+            scheduleDozeEvaluation()
+            return
+        }
+
+        scheduleOnboardingMusicTimer(after: 0.1)
+    }
+
+    private func scheduleOnboardingMusicTimer(after delay: TimeInterval) {
+        onboardingMusicFadeTimer?.invalidate()
+        onboardingMusicTimerGeneration += 1
+        let scheduledTimerGeneration = onboardingMusicTimerGeneration
+
+        let scheduledDelay = max(delay, 0.01)
+        onboardingMusicTimerNextFireDate = Date().addingTimeInterval(scheduledDelay)
+        let musicTimer = Timer(timeInterval: scheduledDelay, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleOnboardingMusicTimerFired(
+                    scheduledTimerGeneration: scheduledTimerGeneration
+                )
             }
         }
+        musicTimer.tolerance = min(0.05, scheduledDelay * 0.1)
+        RunLoop.main.add(musicTimer, forMode: .common)
+        onboardingMusicFadeTimer = musicTimer
+    }
+
+    private func handleOnboardingMusicTimerFired(scheduledTimerGeneration: Int) {
+        guard scheduledTimerGeneration == onboardingMusicTimerGeneration,
+              !isVisualRuntimePaused else {
+            return
+        }
+
+        onboardingMusicFadeTimer = nil
+        onboardingMusicTimerNextFireDate = nil
+
+        switch onboardingMusicTimerPhase {
+        case .waitingToFade:
+            fadeOutOnboardingMusic()
+        case .fadingOut:
+            performNextOnboardingMusicFadeStep()
+        case nil:
+            break
+        }
+    }
+
+    private func pauseOnboardingMusicTimerForLifecycle() {
+        guard onboardingMusicFadeTimer != nil,
+              let onboardingMusicTimerNextFireDate else {
+            return
+        }
+
+        onboardingMusicTimerRemainingDelayAfterLifecyclePause = max(
+            0,
+            onboardingMusicTimerNextFireDate.timeIntervalSinceNow
+        )
+        onboardingMusicFadeTimer?.invalidate()
+        onboardingMusicFadeTimer = nil
+        onboardingMusicTimerGeneration += 1
+        self.onboardingMusicTimerNextFireDate = nil
+    }
+
+    private func resumeOnboardingMusicTimerAfterLifecyclePause() {
+        guard onboardingMusicPlayer != nil,
+              onboardingMusicTimerPhase != nil,
+              let remainingDelay = onboardingMusicTimerRemainingDelayAfterLifecyclePause else {
+            onboardingMusicTimerRemainingDelayAfterLifecyclePause = nil
+            return
+        }
+
+        onboardingMusicTimerRemainingDelayAfterLifecyclePause = nil
+        scheduleOnboardingMusicTimer(after: remainingDelay)
+    }
+
+    private func resetOnboardingMusicTimerState() {
+        onboardingMusicFadeTimer?.invalidate()
+        onboardingMusicFadeTimer = nil
+        onboardingMusicTimerGeneration += 1
+        onboardingMusicTimerPhase = nil
+        onboardingMusicTimerNextFireDate = nil
+        onboardingMusicTimerRemainingDelayAfterLifecyclePause = nil
+        onboardingMusicFadeStepsRemaining = 0
+        onboardingMusicFadeVolumeDecrement = 0
     }
 
     func clearDetectedElementLocation() {
@@ -638,18 +1095,25 @@ final class CompanionManager: ObservableObject {
     }
 
     func stop() {
+        managerHasFinishedStarting = false
         globalPushToTalkShortcutMonitor.stop()
         localSpeechTranscriptionManager.stop()
+        cancelPendingPetdexSpriteRestore()
+        cancelPendingPetdexSpriteSelection()
+        screenshotCaptureTask?.cancel()
+        screenshotCaptureTask = nil
         overlayWindowManager.hideOverlay()
-        spriteAnimationManager.stopAnimationTimer()
+        spriteAnimationManager.setPowerMode(.suspended)
         transientHideTask?.cancel()
         spriteReturnTask?.cancel()
 
         currentResponseTask?.cancel()
         currentResponseTask = nil
+        cancelResponseDismissTask()
         shortcutTransitionCancellable?.cancel()
-        accessibilityCheckTimer?.invalidate()
-        accessibilityCheckTimer = nil
+        spriteStateCancellable?.cancel()
+        stopPermissionPolling()
+        stopEnergySavingMonitoring()
     }
 
     func refreshAllPermissions() {
@@ -690,6 +1154,11 @@ final class CompanionManager: ObservableObject {
         if !previouslyHadAll && allPermissionsGranted {
             ClickyAnalytics.trackAllPermissionsGranted()
         }
+        restoreOrDeferNormalOverlayAfterPermissionGrantIfNeeded(
+            previouslyHadAllPermissions: previouslyHadAll
+        )
+
+        updatePermissionPollingForCurrentState()
     }
 
     /// Triggers the macOS screen content picker by performing a dummy
@@ -719,21 +1188,15 @@ final class CompanionManager: ObservableObject {
                 await MainActor.run {
                     isRequestingScreenContent = false
                     guard didCapture else { return }
+                    let previouslyHadAllPermissions = allPermissionsGranted
                     hasScreenContentPermission = true
                     UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
                     ClickyAnalytics.trackPermissionGranted(permission: "screen_content")
 
-                    // If onboarding was already completed, show the cursor overlay now
-                    if hasCompletedOnboarding && allPermissionsGranted && !isOverlayVisible {
-                        overlayWindowManager.hasShownOverlayBefore = true
-                        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
-                        isOverlayVisible = true
-                        if !isStealthModeEnabled {
-                            let mainScreenFrame = NSScreen.main?.frame ?? .zero
-                            spriteAnimationManager.transitionTo(.resting, targetPosition: nil, screenFrame: mainScreenFrame)
-                            spriteAnimationManager.startAnimationTimer()
-                        }
-                    }
+                    restoreOrDeferNormalOverlayAfterPermissionGrantIfNeeded(
+                        previouslyHadAllPermissions: previouslyHadAllPermissions
+                    )
+                    updatePermissionPollingForCurrentState()
                 }
             } catch {
                 print("⚠️ Screen content permission request failed: \(error)")
@@ -742,17 +1205,656 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    private func restoreOrDeferNormalOverlayAfterPermissionGrantIfNeeded(
+        previouslyHadAllPermissions: Bool
+    ) {
+        guard CompanionSleepPolicy.shouldRestoreNormalOverlayAfterPermissionsBecomeFullyGranted(
+            managerHasFinishedStarting: managerHasFinishedStarting,
+            previouslyHadAllPermissions: previouslyHadAllPermissions,
+            hasCompletedOnboarding: hasCompletedOnboarding,
+            allPermissionsGranted: allPermissionsGranted,
+            isOverlayVisible: isOverlayVisible,
+            isStealthModeEnabled: isStealthModeEnabled,
+            isSleeping: isSleeping
+        ) else {
+            return
+        }
+
+        // A grant may complete while the screen/session is paused. Preserve the
+        // presentation intent without creating a full-screen window behind the lock screen.
+        if isVisualRuntimePaused {
+            shouldRestoreVisualRuntimeAfterLifecyclePause = true
+        } else {
+            restoreNormalOverlayAfterPermissionGrant()
+        }
+    }
+
+    private func restoreNormalOverlayAfterPermissionGrant() {
+        guard hasCompletedOnboarding,
+              allPermissionsGranted,
+              !isOverlayVisible,
+              !isStealthModeEnabled,
+              !isSleeping,
+              !isVisualRuntimePaused else {
+            return
+        }
+
+        overlayWindowManager.hasShownOverlayBefore = true
+        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+        isOverlayVisible = true
+        let mainScreenFrame = NSScreen.main?.frame ?? .zero
+        spriteAnimationManager.transitionTo(
+            .resting,
+            targetPosition: nil,
+            screenFrame: mainScreenFrame
+        )
+        spriteAnimationManager.setPowerMode(.active)
+        scheduleDozeEvaluation()
+    }
+
     // MARK: - Private
 
     /// Polls all permissions frequently so the UI updates live after the
     /// user grants them in System Settings. Screen Recording is the exception —
     /// macOS requires an app restart for that one to take effect.
     private func startPermissionPolling() {
-        accessibilityCheckTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+        guard accessibilityCheckTimer == nil else { return }
+
+        let permissionCheckTimer = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.refreshAllPermissions()
             }
         }
+        permissionCheckTimer.tolerance = 0.3
+        RunLoop.main.add(permissionCheckTimer, forMode: .common)
+        accessibilityCheckTimer = permissionCheckTimer
+    }
+
+    private func stopPermissionPolling() {
+        accessibilityCheckTimer?.invalidate()
+        accessibilityCheckTimer = nil
+    }
+
+    /// Permission polling is only useful while the setup UI is visible. Other
+    /// entry points perform a fresh synchronous check before they need a grant.
+    private func updatePermissionPollingForCurrentState() {
+        let shouldPollForMissingPermissions = isPermissionPanelVisible
+            && !allPermissionsGranted
+            && !isVisualRuntimePaused
+            && !isSleeping
+
+        if shouldPollForMissingPermissions {
+            startPermissionPolling()
+        } else {
+            stopPermissionPolling()
+        }
+    }
+
+    func setAutomaticSleepEnabled(_ enabled: Bool) {
+        isAutomaticSleepEnabled = enabled
+        UserDefaults.standard.set(
+            enabled,
+            forKey: Self.automaticSleepEnabledUserDefaultsKey
+        )
+
+        if enabled {
+            startAutomaticSleepCheckTimer()
+            evaluateAutomaticSleepEligibility()
+            scheduleDozeEvaluation()
+        } else {
+            stopAutomaticSleepCheckTimer()
+            stopDozeEvaluationTimer()
+            removeVisualSuspensionReason(.automaticIdle)
+            exitDozeIfNeeded()
+        }
+    }
+
+    /// The menu panel is itself active use. Opening it wakes Sato and blocks
+    /// automatic sleep until the panel is dismissed.
+    func setMenuBarPanelVisible(
+        _ isVisible: Bool,
+        showsPermissionControls: Bool = true
+    ) {
+        isMenuBarPanelVisible = isVisible
+        isPermissionPanelVisible = isVisible && showsPermissionControls
+        if isVisible {
+            if showsPermissionControls {
+                refreshAllPermissions()
+            }
+            recordMeaningfulSatoActivity()
+        } else {
+            evaluateAutomaticSleepEligibility()
+            scheduleDozeEvaluation()
+        }
+        updatePermissionPollingForCurrentState()
+    }
+
+    /// Status-item clicks are delivered to Sato itself and therefore do not
+    /// reach the global input monitor used during deep sleep. Wake first, then
+    /// let the panel manager decide whether lifecycle state permits presentation.
+    func prepareForMenuBarInteraction() {
+        recordMeaningfulSatoActivity()
+    }
+
+    private func startEnergySavingMonitoring() {
+        guard workspaceSleepObservers.isEmpty else { return }
+
+        if isAutomaticSleepEnabled {
+            startAutomaticSleepCheckTimer()
+        }
+
+        registerWorkspaceSleepObservers()
+
+        evaluateAutomaticSleepEligibility()
+        scheduleDozeEvaluation()
+    }
+
+    private func startAutomaticSleepCheckTimer() {
+        guard automaticSleepCheckTimer == nil,
+              !isSleeping,
+              !isVisualRuntimePaused else {
+            return
+        }
+
+        let sleepCheckTimer = Timer(
+            timeInterval: Self.automaticSleepCheckInterval,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.evaluateAutomaticSleepEligibility()
+            }
+        }
+        sleepCheckTimer.tolerance = 5
+        RunLoop.main.add(sleepCheckTimer, forMode: .common)
+        automaticSleepCheckTimer = sleepCheckTimer
+    }
+
+    private func stopAutomaticSleepCheckTimer() {
+        automaticSleepCheckTimer?.invalidate()
+        automaticSleepCheckTimer = nil
+    }
+
+    private func scheduleDozeEvaluation() {
+        stopDozeEvaluationTimer()
+
+        guard isAutomaticSleepEnabled,
+              isOverlayVisible,
+              !isStealthModeEnabled,
+              !isSleeping,
+              !isVisualRuntimePaused else {
+            return
+        }
+
+        let meaningfulSatoInactivityDuration = Date().timeIntervalSince(lastMeaningfulSatoActivityDate)
+        let nextEvaluationDelay = CompanionSleepPolicy.nextDozeEvaluationDelay(
+            meaningfulSatoInactivityDuration: meaningfulSatoInactivityDuration,
+            dozeInactivityDuration: Self.dozeInactivityDuration,
+            canDozeNow: canDozeVisualRuntime,
+            blockedRetryDuration: Self.blockedDozeEligibilityRetryDuration
+        )
+        guard let nextEvaluationDelay else {
+            evaluateDozeEligibility()
+            return
+        }
+
+        let dozeTimer = Timer(timeInterval: nextEvaluationDelay, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.evaluateDozeEligibility()
+            }
+        }
+        dozeTimer.tolerance = min(1, nextEvaluationDelay * 0.1)
+        RunLoop.main.add(dozeTimer, forMode: .common)
+        dozeEvaluationTimer = dozeTimer
+    }
+
+    private func stopDozeEvaluationTimer() {
+        dozeEvaluationTimer?.invalidate()
+        dozeEvaluationTimer = nil
+    }
+
+    private func evaluateDozeEligibility() {
+        stopDozeEvaluationTimer()
+
+        let meaningfulSatoInactivityDuration = Date().timeIntervalSince(lastMeaningfulSatoActivityDate)
+        guard CompanionSleepPolicy.hasReachedDozeThreshold(
+            meaningfulSatoInactivityDuration: meaningfulSatoInactivityDuration,
+            dozeInactivityDuration: Self.dozeInactivityDuration
+        ) else {
+            scheduleDozeEvaluation()
+            return
+        }
+
+        guard canDozeVisualRuntime else {
+            exitDozeIfNeeded()
+            scheduleDozeEvaluation()
+            return
+        }
+
+        guard !isDozing else { return }
+        isDozing = true
+        spriteAnimationManager.setPowerMode(.dozing)
+        print("🌙 Sato: visual runtime dozing")
+    }
+
+    private var canDozeVisualRuntime: Bool {
+        CompanionSleepPolicy.canDozeVisualRuntime(
+            isAutomaticSleepEnabled: isAutomaticSleepEnabled,
+            isNormalOverlayVisible: isOverlayVisible && !isStealthModeEnabled,
+            isVisualRuntimePaused: isVisualRuntimePaused || isSleeping,
+            isMenuBarPanelVisible: isMenuBarPanelVisible,
+            assistFlowIsInactive: assistFlowPhase == .inactive,
+            isResponseStreaming: assistResponseIsStreaming,
+            isChatStreaming: chatSidebarIsStreaming,
+            isCapturingScreenshot: isCapturingScreenshotForSelection,
+            isRequestingScreenContent: isRequestingScreenContent,
+            isSpeechInputBusy: localSpeechTranscriptionManager.isSpeechInputBusy,
+            isOnboardingVisible: showOnboardingVideo || showOnboardingPrompt,
+            isOnboardingAudioPlaying: onboardingMusicPlayer?.isPlaying == true,
+            isSpriteResting: spriteAnimationManager.spriteState == .resting
+        )
+    }
+
+    private func recordMeaningfulSatoActivity() {
+        lastMeaningfulSatoActivityDate = Date()
+        exitDozeIfNeeded()
+        removeVisualSuspensionReason(.automaticIdle)
+        scheduleDozeEvaluation()
+    }
+
+    private func exitDozeIfNeeded() {
+        guard isDozing else { return }
+        isDozing = false
+
+        guard !isSleeping,
+              !isVisualRuntimePaused,
+              isOverlayVisible,
+              !isStealthModeEnabled else {
+            return
+        }
+        spriteAnimationManager.setPowerMode(.active)
+        print("🌙 Sato: visual runtime active")
+    }
+
+    private func registerWorkspaceSleepObservers() {
+        let workspaceNotificationCenter = NSWorkspace.shared.notificationCenter
+        workspaceSleepObservers = [
+            workspaceNotificationCenter.addObserver(
+                forName: NSWorkspace.willSleepNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.requestVisualSuspension(for: .systemSleep)
+                }
+            },
+            workspaceNotificationCenter.addObserver(
+                forName: NSWorkspace.didWakeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.removeVisualSuspensionReason(.systemSleep)
+                }
+            },
+            workspaceNotificationCenter.addObserver(
+                forName: NSWorkspace.screensDidSleepNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.requestVisualSuspension(for: .screensAsleep)
+                }
+            },
+            workspaceNotificationCenter.addObserver(
+                forName: NSWorkspace.screensDidWakeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.removeVisualSuspensionReason(.screensAsleep)
+                }
+            },
+            workspaceNotificationCenter.addObserver(
+                forName: NSWorkspace.sessionDidResignActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.requestVisualSuspension(for: .sessionInactive)
+                }
+            },
+            workspaceNotificationCenter.addObserver(
+                forName: NSWorkspace.sessionDidBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.removeVisualSuspensionReason(.sessionInactive)
+                }
+            },
+        ]
+    }
+
+    private func stopEnergySavingMonitoring() {
+        stopAutomaticSleepCheckTimer()
+        stopDozeEvaluationTimer()
+
+        let workspaceNotificationCenter = NSWorkspace.shared.notificationCenter
+        for workspaceSleepObserver in workspaceSleepObservers {
+            workspaceNotificationCenter.removeObserver(workspaceSleepObserver)
+        }
+        workspaceSleepObservers.removeAll()
+        removeSleepingWakeEventMonitor()
+        activeVisualSuspensionReasons.removeAll()
+        isSleeping = false
+        isDozing = false
+        isVisualRuntimePaused = false
+    }
+
+    private func evaluateAutomaticSleepEligibility() {
+        if shouldRequestAutomaticSleepForCurrentIdleState {
+            requestVisualSuspension(for: .automaticIdle)
+        } else {
+            removeVisualSuspensionReason(.automaticIdle)
+        }
+    }
+
+    private var shouldRequestAutomaticSleepForCurrentIdleState: Bool {
+        guard isAutomaticSleepEnabled else { return false }
+
+        let anyInputEventType = CGEventType(rawValue: UInt32.max)!
+        let systemIdleDuration = CGEventSource.secondsSinceLastEventType(
+            .combinedSessionState,
+            eventType: anyInputEventType
+        )
+        return CompanionSleepPolicy.shouldRequestAutomaticSleep(
+            isEnabled: true,
+            systemIdleDuration: systemIdleDuration,
+            inactivityDuration: Self.automaticSleepInactivityDuration
+        )
+    }
+
+    private func requestVisualSuspension(for reason: VisualSuspensionReason) {
+        if reason.isLifecycleReason {
+            requestLifecycleVisualPause(for: reason)
+            return
+        }
+
+        guard isAutomaticSleepEnabled,
+              !activeVisualSuspensionReasons.contains(.automaticIdle) else {
+            return
+        }
+        guard !isSleeping else { return }
+        guard canSuspendVisualRuntime else { return }
+
+        activeVisualSuspensionReasons.insert(.automaticIdle)
+        suspendVisualRuntime()
+    }
+
+    private func requestLifecycleVisualPause(for reason: VisualSuspensionReason) {
+        guard reason.isLifecycleReason,
+              activeVisualSuspensionReasons.insert(reason).inserted else {
+            return
+        }
+
+        if isMenuBarPanelVisible {
+            NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+        }
+        if reason == .sessionInactive {
+            // Never leave the microphone recording after the user locks or
+            // switches away from the current login session.
+            localSpeechTranscriptionManager.cancelActiveSpeechOperation()
+        }
+        pauseVisualRuntimeForLifecycle()
+    }
+
+    private func removeVisualSuspensionReason(_ reason: VisualSuspensionReason) {
+        activeVisualSuspensionReasons.remove(reason)
+
+        if reason.isLifecycleReason {
+            guard !shouldRemainPausedForLifecycle else { return }
+
+            if isSleeping {
+                if activeVisualSuspensionReasons.isEmpty,
+                   shouldRequestAutomaticSleepForCurrentIdleState {
+                    activeVisualSuspensionReasons.insert(.automaticIdle)
+                    return
+                }
+                if activeVisualSuspensionReasons.isEmpty {
+                    resumeVisualRuntimeAfterSleep()
+                }
+                return
+            }
+
+            if shouldRequestAutomaticSleepForCurrentIdleState,
+               canSuspendVisualRuntime {
+                activeVisualSuspensionReasons.insert(.automaticIdle)
+                suspendVisualRuntime()
+                return
+            }
+
+            resumeVisualRuntimeAfterLifecyclePause()
+            return
+        }
+
+        if isSleeping,
+           activeVisualSuspensionReasons.isEmpty,
+           !shouldRemainPausedForLifecycle {
+            resumeVisualRuntimeAfterSleep()
+        }
+    }
+
+    private var shouldRemainPausedForLifecycle: Bool {
+        let lifecycleSuspensionReasonCount = activeVisualSuspensionReasons.reduce(into: 0) {
+            lifecycleSuspensionReasonCount, reason in
+            if reason.isLifecycleReason {
+                lifecycleSuspensionReasonCount += 1
+            }
+        }
+        return CompanionSleepPolicy.shouldRemainPausedForLifecycle(
+            activeLifecycleSuspensionReasonCount: lifecycleSuspensionReasonCount
+        )
+    }
+
+    private var canSuspendVisualRuntime: Bool {
+        CompanionSleepPolicy.canSuspendVisualRuntime(
+            hasCompletedOnboarding: hasCompletedOnboarding,
+            allPermissionsGranted: allPermissionsGranted,
+            isMenuBarPanelVisible: isMenuBarPanelVisible,
+            assistFlowIsInactive: assistFlowPhase == .inactive,
+            isResponseStreaming: assistResponseIsStreaming,
+            isChatStreaming: chatSidebarIsStreaming,
+            isCapturingScreenshot: isCapturingScreenshotForSelection,
+            isRequestingScreenContent: isRequestingScreenContent,
+            isSpeechInputBusy: localSpeechTranscriptionManager.isSpeechInputBusy,
+            isOnboardingVisible: showOnboardingVideo || showOnboardingPrompt,
+            isOnboardingAudioPlaying: onboardingMusicPlayer?.isPlaying == true,
+            hasPendingLifecycleResumeIntent: hasPendingLifecycleResumeIntent,
+            isSpriteResting: spriteAnimationManager.spriteState == .resting
+        )
+    }
+
+    private var hasPendingLifecycleResumeIntent: Bool {
+        shouldRestoreVisualRuntimeAfterLifecyclePause
+            || shouldStartOnboardingVideoAfterLifecyclePause
+            || shouldResumeOnboardingVideoAfterLifecyclePause
+            || shouldResumeOnboardingPromptAfterLifecyclePause
+            || shouldResumeOnboardingMusicAfterLifecyclePause
+            || onboardingMusicTimerRemainingDelayAfterLifecyclePause != nil
+    }
+
+    private func suspendVisualRuntime() {
+        guard !isSleeping else { return }
+
+        shouldRestoreVisualRuntimeAfterSleep = isOverlayVisible && !isStealthModeEnabled
+        stopDozeEvaluationTimer()
+        isDozing = false
+        isVisualRuntimePaused = true
+        spriteAnimationManager.setPowerMode(.suspended)
+        spriteAnimationManager.isVisible = false
+        overlayWindowManager.hideOverlay()
+        isOverlayVisible = false
+        stopPermissionPolling()
+        stopAutomaticSleepCheckTimer()
+        isSleeping = true
+        installSleepingWakeEventMonitor()
+        print("🌙 Sato: visual runtime sleeping")
+    }
+
+    private func pauseVisualRuntimeForLifecycle() {
+        guard !isVisualRuntimePaused else { return }
+
+        stopDozeEvaluationTimer()
+        cancelResponseDismissTask()
+        shouldResumeTransientHideAfterLifecyclePause = transientHideTask != nil
+        transientHideTask?.cancel()
+        transientHideTask = nil
+        shouldResumeOnboardingVideoAfterLifecyclePause = onboardingVideoPlayer?.rate != 0
+        shouldResumeOnboardingMusicAfterLifecyclePause = onboardingMusicPlayer?.isPlaying == true
+        pauseOnboardingPromptForLifecycle()
+        onboardingVideoAudioFadeTimer?.invalidate()
+        onboardingVideoAudioFadeTimer = nil
+        pauseOnboardingMusicTimerForLifecycle()
+        onboardingVideoPlayer?.pause()
+        onboardingMusicPlayer?.pause()
+        isDozing = false
+        isVisualRuntimePaused = true
+        spriteAnimationManager.setPowerMode(.suspended)
+        overlayWindowManager.pauseVisualRuntimeWindows()
+        stopPermissionPolling()
+        stopAutomaticSleepCheckTimer()
+        print("🌙 Sato: visual runtime paused for system lifecycle")
+    }
+
+    private func resumeVisualRuntimeAfterLifecyclePause() {
+        guard isVisualRuntimePaused,
+              !isSleeping,
+              !shouldRemainPausedForLifecycle else {
+            return
+        }
+
+        isVisualRuntimePaused = false
+        overlayWindowManager.resumeVisualRuntimeWindows()
+        if shouldRestoreVisualRuntimeAfterLifecyclePause {
+            shouldRestoreVisualRuntimeAfterLifecyclePause = false
+            restoreNormalOverlayAfterPermissionGrant()
+        }
+        if shouldStartOnboardingVideoAfterLifecyclePause {
+            shouldStartOnboardingVideoAfterLifecyclePause = false
+            setupOnboardingVideo()
+        } else if shouldResumeOnboardingVideoAfterLifecyclePause {
+            onboardingVideoPlayer?.play()
+            if let onboardingVideoPlayer,
+               onboardingVideoPlayer.volume < 1 {
+                fadeInVideoAudio(
+                    player: onboardingVideoPlayer,
+                    targetVolume: 1,
+                    duration: 0.5
+                )
+            }
+        }
+        resumeOnboardingPromptAfterLifecyclePause()
+        if shouldResumeOnboardingMusicAfterLifecyclePause {
+            onboardingMusicPlayer?.play()
+            resumeOnboardingMusicTimerAfterLifecyclePause()
+        } else {
+            onboardingMusicTimerRemainingDelayAfterLifecyclePause = nil
+        }
+        shouldResumeOnboardingVideoAfterLifecyclePause = false
+        shouldResumeOnboardingMusicAfterLifecyclePause = false
+        refreshAllPermissions()
+        updatePermissionPollingForCurrentState()
+        if isAutomaticSleepEnabled {
+            startAutomaticSleepCheckTimer()
+        }
+
+        if isOverlayVisible && !isStealthModeEnabled {
+            spriteAnimationManager.setPowerMode(.active)
+            scheduleDozeEvaluation()
+        } else {
+            spriteAnimationManager.setPowerMode(.suspended)
+        }
+        scheduleResponseDismissTask()
+        if shouldResumeTransientHideAfterLifecyclePause {
+            shouldResumeTransientHideAfterLifecyclePause = false
+            scheduleTransientHideIfNeeded()
+        }
+        print("🌙 Sato: visual runtime resumed after system lifecycle")
+    }
+
+    private func resumeVisualRuntimeAfterSleep() {
+        guard isSleeping, activeVisualSuspensionReasons.isEmpty else { return }
+
+        isSleeping = false
+        isVisualRuntimePaused = false
+        removeSleepingWakeEventMonitor()
+        refreshAllPermissions()
+        updatePermissionPollingForCurrentState()
+        if isAutomaticSleepEnabled {
+            startAutomaticSleepCheckTimer()
+        }
+
+        let shouldRestoreVisualRuntime = shouldRestoreVisualRuntimeAfterSleep
+        shouldRestoreVisualRuntimeAfterSleep = false
+        guard shouldRestoreVisualRuntime,
+              hasCompletedOnboarding,
+              allPermissionsGranted,
+              !isStealthModeEnabled else {
+            spriteAnimationManager.setPowerMode(.suspended)
+            print("🌙 Sato: awake with visual runtime dormant")
+            return
+        }
+
+        overlayWindowManager.hasShownOverlayBefore = true
+        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+        isOverlayVisible = true
+        let mainScreenFrame = NSScreen.main?.frame ?? .zero
+        spriteAnimationManager.transitionTo(
+            .resting,
+            targetPosition: nil,
+            screenFrame: mainScreenFrame
+        )
+        spriteAnimationManager.setPowerMode(.active)
+        scheduleDozeEvaluation()
+        print("🌙 Sato: visual runtime awake")
+    }
+
+    private func wakeFromSystemInputActivity() {
+        removeVisualSuspensionReason(.automaticIdle)
+    }
+
+    private func installSleepingWakeEventMonitor() {
+        guard sleepingWakeEventMonitor == nil else { return }
+
+        let wakeEventOneShotGate = CompanionWakeEventOneShotGate()
+        sleepingWakeEventOneShotGate = wakeEventOneShotGate
+
+        let wakeEventMask: NSEvent.EventTypeMask = [
+            .mouseMoved,
+            .leftMouseDown,
+            .rightMouseDown,
+            .otherMouseDown,
+            .scrollWheel,
+            .keyDown,
+        ]
+        sleepingWakeEventMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: wakeEventMask
+        ) { [weak self, wakeEventOneShotGate] _ in
+            guard wakeEventOneShotGate.claim() else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.removeSleepingWakeEventMonitor()
+                self.wakeFromSystemInputActivity()
+            }
+        }
+    }
+
+    private func removeSleepingWakeEventMonitor() {
+        if let sleepingWakeEventMonitor {
+            NSEvent.removeMonitor(sleepingWakeEventMonitor)
+            self.sleepingWakeEventMonitor = nil
+        }
+        sleepingWakeEventOneShotGate = nil
     }
 
     private func bindShortcutTransitions() {
@@ -764,6 +1866,22 @@ final class CompanionManager: ObservableObject {
             }
     }
 
+    private func bindSpritePowerTransitions() {
+        spriteStateCancellable = spriteAnimationManager.$spriteState
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] spriteState in
+                guard let self else { return }
+
+                if spriteState == .resting {
+                    self.scheduleDozeEvaluation()
+                } else {
+                    self.stopDozeEvaluationTimer()
+                    self.exitDozeIfNeeded()
+                }
+            }
+    }
+
     // MARK: - Assist (Ctrl+Option)
 
     /// Starts the text-based assist flow.
@@ -771,6 +1889,9 @@ final class CompanionManager: ObservableObject {
     /// - Stealth mode ON: screenshot selection appears immediately at cursor
     /// - Chat sidebar open: capture a screenshot for the next follow-up turn in the active conversation
     private func handleAssistHotkey() {
+        transientHideTask?.cancel()
+        transientHideTask = nil
+
         if assistFlowPhase == .chatSidebar {
             startFollowUpScreenshotCapture()
             return
@@ -785,6 +1906,7 @@ final class CompanionManager: ObservableObject {
         NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
 
         // Cancel any in-progress response
+        cancelResponseDismissTask()
         currentResponseTask?.cancel()
         clearDetectedElementLocation()
 
@@ -871,10 +1993,19 @@ final class CompanionManager: ObservableObject {
 
     /// Captures the cursor screen and transitions into screenshot selection.
     private func captureScreenshotForSelectionOverlay() {
-        Task {
+        guard !isCapturingScreenshotForSelection else { return }
+        isCapturingScreenshotForSelection = true
+
+        screenshotCaptureTask = Task {
+            defer {
+                isCapturingScreenshotForSelection = false
+                screenshotCaptureTask = nil
+            }
+
             do {
                 // Capture just the cursor screen for the selection overlay
                 let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                guard !Task.isCancelled else { return }
                 guard let cursorScreenCapture = screenCaptures.first(where: { $0.isCursorScreen }) else {
                     print("⚠️ Assist: no cursor screen capture")
                     cancelScreenshotSelection()
@@ -891,6 +2022,8 @@ final class CompanionManager: ObservableObject {
                 assistScreenshotImage = screenshotNSImage
                 assistFlowPhase = .selectingScreenshot
                 print("📸 Assist: screenshot captured, showing selection overlay")
+            } catch is CancellationError {
+                return
             } catch {
                 print("⚠️ Assist: screenshot capture failed: \(error)")
                 cancelScreenshotSelection()
@@ -937,6 +2070,9 @@ final class CompanionManager: ObservableObject {
             cancelAssistFlow()
             return
         }
+
+        recordMeaningfulSatoActivity()
+        cancelResponseDismissTask()
 
         let userMessage = ChatSidebarMessage(
             role: .user,
@@ -1011,6 +2147,8 @@ final class CompanionManager: ObservableObject {
                 // and go straight to the sidebar once streaming finishes
                 if self.alwaysOpenChatSidebar {
                     self.openChatSidebar()
+                } else {
+                    self.scheduleResponseDismissTask()
                 }
             } catch is CancellationError {
                 // Flow was cancelled — stop animation immediately
@@ -1036,13 +2174,48 @@ final class CompanionManager: ObservableObject {
                 if !self.isStealthModeEnabled {
                     self.spriteAnimationManager.stopMessageDeliveredLoop()
                 }
+                self.scheduleResponseDismissTask()
             }
         }
+    }
+
+    private func scheduleResponseDismissTask() {
+        cancelResponseDismissTask()
+        guard assistFlowPhase == .showingResponse,
+              !assistResponseIsStreaming,
+              !isVisualRuntimePaused,
+              !isSleeping else {
+            return
+        }
+
+        responseDismissTask = Task { [weak self] in
+            do {
+                try await Task.sleep(
+                    nanoseconds: UInt64(Self.completedResponseDismissDelay * 1_000_000_000)
+                )
+            } catch {
+                return
+            }
+
+            guard let self,
+                  self.assistFlowPhase == .showingResponse,
+                  !self.assistResponseIsStreaming else {
+                return
+            }
+            self.responseDismissTask = nil
+            self.dismissAssistResponseAndReturn()
+        }
+    }
+
+    private func cancelResponseDismissTask() {
+        responseDismissTask?.cancel()
+        responseDismissTask = nil
     }
 
     /// Dismisses the speech bubble and flies the sprite back to resting.
     /// In stealth mode there's no sprite to fly back, so just reset state.
     func dismissAssistResponseAndReturn() {
+        cancelResponseDismissTask()
         assistFlowPhase = .inactive
         assistResponseText = ""
         assistResponseIsStreaming = false
@@ -1057,6 +2230,7 @@ final class CompanionManager: ObservableObject {
         conversationStore.setProtectedConversation(conversationID: nil)
 
         if isStealthModeEnabled {
+            scheduleTransientHideIfNeeded()
             return
         }
 
@@ -1072,6 +2246,10 @@ final class CompanionManager: ObservableObject {
 
     /// Cancels the assist flow at any phase and returns the sprite to resting.
     func cancelAssistFlow() {
+        cancelResponseDismissTask()
+        screenshotCaptureTask?.cancel()
+        screenshotCaptureTask = nil
+        isCapturingScreenshotForSelection = false
         currentResponseTask?.cancel()
         currentResponseTask = nil
         localSpeechTranscriptionManager.cancelActiveSpeechOperation()
@@ -1089,6 +2267,7 @@ final class CompanionManager: ObservableObject {
         conversationStore.setProtectedConversation(conversationID: nil)
 
         if isStealthModeEnabled {
+            scheduleTransientHideIfNeeded()
             return
         }
 
@@ -1101,24 +2280,23 @@ final class CompanionManager: ObservableObject {
                 targetPosition: nil,
                 screenFrame: screenFrame
             )
+        } else {
+            scheduleDozeEvaluation()
         }
     }
 
     private func handleShortcutTransition(_ transition: ShortcutTransition) {
         switch transition {
         case .pressed:
+            recordMeaningfulSatoActivity()
+            guard !isSleeping, !isVisualRuntimePaused else { return }
+
             // Don't register while the onboarding video is playing
             guard !showOnboardingVideo else { return }
 
             // Dismiss the onboarding prompt if it's showing
             if showOnboardingPrompt {
-                withAnimation(.easeOut(duration: 0.3)) {
-                    onboardingPromptOpacity = 0.0
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    self.showOnboardingPrompt = false
-                    self.onboardingPromptText = ""
-                }
+                dismissOnboardingPromptForUserAction()
             }
 
             handleAssistHotkey()
@@ -1217,10 +2395,13 @@ final class CompanionManager: ObservableObject {
                 guard !Task.isCancelled else { return }
             }
 
-            // Pause 1s after everything finishes, then fade out
+            // Pause 1s after everything finishes, then release the hosting
+            // views so their per-display cursor tracking timers disappear too.
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard !Task.isCancelled else { return }
-            overlayWindowManager.fadeOutAndHideOverlay()
+            overlayWindowManager.hideOverlay()
+            spriteAnimationManager.setPowerMode(.suspended)
+            spriteAnimationManager.isVisible = false
             isOverlayVisible = false
         }
     }
@@ -1322,6 +2503,13 @@ final class CompanionManager: ObservableObject {
     /// The video plays in a dedicated floating window with playback controls
     /// and a close button (managed by OverlayWindowManager).
     func setupOnboardingVideo() {
+        guard onboardingVideoPlayer == nil else { return }
+        guard !isVisualRuntimePaused else {
+            shouldStartOnboardingVideoAfterLifecyclePause = true
+            return
+        }
+        shouldStartOnboardingVideoAfterLifecyclePause = false
+
         guard let videoURL = Bundle.main.url(forResource: "onboarding", withExtension: "mp4") else {
             print("⚠️ Sato: onboarding.mp4 not found in bundle")
             return
@@ -1381,6 +2569,9 @@ final class CompanionManager: ObservableObject {
 
     func tearDownOnboardingVideo() {
         showOnboardingVideo = false
+        shouldStartOnboardingVideoAfterLifecyclePause = false
+        onboardingVideoAudioFadeTimer?.invalidate()
+        onboardingVideoAudioFadeTimer = nil
         if let timeObserver = onboardingDemoTimeObserver {
             onboardingVideoPlayer?.removeTimeObserver(timeObserver)
             onboardingDemoTimeObserver = nil
@@ -1393,8 +2584,16 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    private static let onboardingPromptMessage = "press control + option and introduce yourself"
+
     private func startOnboardingPromptStream() {
-        let message = "press control + option and introduce yourself"
+        guard !isVisualRuntimePaused else {
+            shouldResumeOnboardingPromptAfterLifecyclePause = true
+            return
+        }
+
+        stopOnboardingPromptTimers()
+        shouldResumeOnboardingPromptAfterLifecyclePause = false
         onboardingPromptText = ""
         showOnboardingPrompt = true
         onboardingPromptOpacity = 0.0
@@ -1403,46 +2602,174 @@ final class CompanionManager: ObservableObject {
             onboardingPromptOpacity = 1.0
         }
 
-        var currentIndex = 0
-        Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { timer in
-            guard currentIndex < message.count else {
-                timer.invalidate()
-                // Auto-dismiss after 10 seconds
-                DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) {
-                    guard self.showOnboardingPrompt else { return }
-                    withAnimation(.easeOut(duration: 0.3)) {
-                        self.onboardingPromptOpacity = 0.0
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                        self.showOnboardingPrompt = false
-                        self.onboardingPromptText = ""
-                    }
+        continueOnboardingPromptStream()
+    }
+
+    private func continueOnboardingPromptStream() {
+        onboardingPromptStreamTimer?.invalidate()
+
+        guard showOnboardingPrompt,
+              onboardingPromptText.count < Self.onboardingPromptMessage.count else {
+            scheduleOnboardingPromptDismissal()
+            return
+        }
+
+        let promptStreamTimer = Timer(timeInterval: 0.03, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.showOnboardingPrompt,
+                      !self.isVisualRuntimePaused else {
+                    self?.onboardingPromptStreamTimer?.invalidate()
+                    self?.onboardingPromptStreamTimer = nil
+                    return
                 }
+
+                let message = Self.onboardingPromptMessage
+                guard self.onboardingPromptText.count < message.count else {
+                    self.onboardingPromptStreamTimer?.invalidate()
+                    self.onboardingPromptStreamTimer = nil
+                    self.scheduleOnboardingPromptDismissal()
+                    return
+                }
+
+                let nextCharacterIndex = message.index(
+                    message.startIndex,
+                    offsetBy: self.onboardingPromptText.count
+                )
+                self.onboardingPromptText.append(message[nextCharacterIndex])
+            }
+        }
+        promptStreamTimer.tolerance = 0.005
+        RunLoop.main.add(promptStreamTimer, forMode: .common)
+        onboardingPromptStreamTimer = promptStreamTimer
+    }
+
+    private func scheduleOnboardingPromptDismissal() {
+        onboardingPromptDismissTask?.cancel()
+        onboardingPromptDismissGeneration += 1
+        let scheduledDismissGeneration = onboardingPromptDismissGeneration
+        onboardingPromptDismissTask = Task { [weak self] in
+            defer {
+                if let self,
+                   self.onboardingPromptDismissGeneration == scheduledDismissGeneration {
+                    self.onboardingPromptDismissTask = nil
+                }
+            }
+            do {
+                try await Task.sleep(nanoseconds: 10_000_000_000)
+            } catch {
                 return
             }
-            let index = message.index(message.startIndex, offsetBy: currentIndex)
-            self.onboardingPromptText.append(message[index])
-            currentIndex += 1
+
+            guard let self,
+                  self.showOnboardingPrompt,
+                  !self.isVisualRuntimePaused else {
+                return
+            }
+            withAnimation(.easeOut(duration: 0.3)) {
+                self.onboardingPromptOpacity = 0.0
+            }
+
+            do {
+                try await Task.sleep(nanoseconds: 350_000_000)
+            } catch {
+                return
+            }
+            guard self.showOnboardingPrompt,
+                  !self.isVisualRuntimePaused else {
+                return
+            }
+            self.showOnboardingPrompt = false
+            self.onboardingPromptText = ""
+            self.scheduleDozeEvaluation()
         }
+    }
+
+    private func pauseOnboardingPromptForLifecycle() {
+        guard showOnboardingPrompt
+                || onboardingPromptStreamTimer != nil
+                || onboardingPromptDismissTask != nil else {
+            return
+        }
+
+        if showOnboardingPrompt,
+           onboardingPromptOpacity <= 0.01 {
+            stopOnboardingPromptTimers()
+            showOnboardingPrompt = false
+            onboardingPromptText = ""
+            shouldResumeOnboardingPromptAfterLifecyclePause = false
+            return
+        }
+
+        shouldResumeOnboardingPromptAfterLifecyclePause = true
+        stopOnboardingPromptTimers()
+    }
+
+    private func resumeOnboardingPromptAfterLifecyclePause() {
+        guard shouldResumeOnboardingPromptAfterLifecyclePause else { return }
+        shouldResumeOnboardingPromptAfterLifecyclePause = false
+
+        if showOnboardingPrompt {
+            continueOnboardingPromptStream()
+        } else {
+            startOnboardingPromptStream()
+        }
+    }
+
+    private func stopOnboardingPromptTimers() {
+        onboardingPromptStreamTimer?.invalidate()
+        onboardingPromptStreamTimer = nil
+        onboardingPromptDismissGeneration += 1
+        onboardingPromptDismissTask?.cancel()
+        onboardingPromptDismissTask = nil
+    }
+
+    private func dismissOnboardingPromptForUserAction() {
+        stopOnboardingPromptTimers()
+        shouldResumeOnboardingPromptAfterLifecyclePause = false
+        onboardingPromptOpacity = 0.0
+        showOnboardingPrompt = false
+        onboardingPromptText = ""
+        scheduleDozeEvaluation()
     }
 
     /// Gradually raises an AVPlayer's volume from its current level to the
     /// target over the specified duration, creating a smooth audio fade-in.
     private func fadeInVideoAudio(player: AVPlayer, targetVolume: Float, duration: Double) {
+        guard player === onboardingVideoPlayer,
+              !isVisualRuntimePaused else {
+            return
+        }
+
+        onboardingVideoAudioFadeTimer?.invalidate()
         let steps = 20
         let stepInterval = duration / Double(steps)
         let volumeIncrement = (targetVolume - player.volume) / Float(steps)
         var stepsRemaining = steps
 
-        Timer.scheduledTimer(withTimeInterval: stepInterval, repeats: true) { timer in
-            stepsRemaining -= 1
-            player.volume += volumeIncrement
+        let audioFadeTimer = Timer(timeInterval: stepInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      player === self.onboardingVideoPlayer,
+                      !self.isVisualRuntimePaused else {
+                    self?.onboardingVideoAudioFadeTimer?.invalidate()
+                    self?.onboardingVideoAudioFadeTimer = nil
+                    return
+                }
 
-            if stepsRemaining <= 0 {
-                timer.invalidate()
-                player.volume = targetVolume
+                stepsRemaining -= 1
+                player.volume += volumeIncrement
+
+                if stepsRemaining <= 0 {
+                    self.onboardingVideoAudioFadeTimer?.invalidate()
+                    player.volume = targetVolume
+                    self.onboardingVideoAudioFadeTimer = nil
+                }
             }
         }
+        audioFadeTimer.tolerance = min(0.02, stepInterval * 0.2)
+        RunLoop.main.add(audioFadeTimer, forMode: .common)
+        onboardingVideoAudioFadeTimer = audioFadeTimer
     }
 
     // MARK: - Onboarding Demo Interaction

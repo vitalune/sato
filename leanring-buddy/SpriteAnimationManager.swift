@@ -4,8 +4,8 @@
 //
 //  Manages the Samoyed sprite's animation frames, position interpolation,
 //  and behavioral state machine. Preloads all GIF frames at launch,
-//  steps through them at ~8-10 FPS for a pixel art aesthetic, and
-//  interpolates the sprite's screen position at 60 FPS for smooth movement.
+//  advances them with a state-adaptive 10/30/60 Hz cadence so stationary
+//  animation, walking patrol, and high-motion tracking use only the work needed.
 //
 
 import AppKit
@@ -29,6 +29,17 @@ enum SpriteState: Equatable {
     case pointingAtElement
     /// Flying back to the resting position at the bottom of the screen.
     case flyingBackToResting
+}
+
+/// Controls how much animation work the sprite performs while preserving the
+/// existing behavioral state machine.
+enum SpriteAnimationPowerMode: Equatable {
+    /// Normal behavior with cadence selected from the current sprite state.
+    case active
+    /// A stationary south-facing idle animation. Only valid while resting.
+    case dozing
+    /// No animation or behavioral timers are running.
+    case suspended
 }
 
 @MainActor
@@ -55,6 +66,10 @@ final class SpriteAnimationManager: ObservableObject {
     /// this against its own screenFrame to decide whether to render.
     @Published var currentScreenFrame: CGRect = .zero
 
+    /// Current animation energy policy. CompanionManager moves between these
+    /// modes as the visual runtime becomes active, idle, or fully hidden.
+    @Published private(set) var powerMode: SpriteAnimationPowerMode = .suspended
+
     // MARK: - Animation Internals
 
     /// All preloaded frames, indexed by [animationType][direction].
@@ -66,6 +81,8 @@ final class SpriteAnimationManager: ObservableObject {
     /// The frame array currently being played.
     private var activeFrames: [NSImage] = []
     private var activeFrameDurations: [TimeInterval] = []
+    private var activeAnimationType: SpriteAnimationType?
+    private var activeAnimationDirection: SpriteDirection?
     private var currentFrameIndex: Int = 0
     private var frameTimeAccumulator: TimeInterval = 0.0
 
@@ -94,7 +111,14 @@ final class SpriteAnimationManager: ObservableObject {
     // MARK: - Timer
 
     private var animationTimer: Timer?
+    private var animationTimerInterval: TimeInterval?
+    private var animationTimerGeneration = 0
     private var lastTickTime: CFTimeInterval = 0.0
+
+    private static let highMotionAnimationInterval: TimeInterval = 1.0 / 60.0
+    private static let patrolAnimationInterval: TimeInterval = 1.0 / 30.0
+    private static let stationaryAnimationInterval: TimeInterval = 1.0 / 10.0
+    private static let cursorPositionSnapDistance: CGFloat = 0.25
 
     /// Minimum speed in points per second for flight interpolation.
     private static let flightSpeedPointsPerSecond: CGFloat = 900.0
@@ -176,8 +200,17 @@ final class SpriteAnimationManager: ObservableObject {
 
     // MARK: - GIF Asset Filename Map
 
-    /// Which sprite directory is currently active.
-    private(set) var activeSpriteDirectory: String = "max-animations"
+    /// Stable identifier for the active bundled sprite or cached Petdex pet.
+    @Published private(set) var activeSpriteDirectory: String = "max-animations"
+
+    /// Metadata for the selected community pet. Nil means a bundled sprite is active.
+    @Published private(set) var activeCustomSpriteMetadata: CachedPetdexSprite?
+
+    /// Invalidates background Petdex preparation whenever another sprite source wins.
+    /// This prevents an older atlas decode from replacing a newer bundled or custom
+    /// selection after its asynchronous work finishes.
+    private var spriteSourceGeneration = 0
+    private var petdexPreparationTask: Task<PetdexPreparedAtlasRows, Error>?
 
     /// Maps (animationType, direction) to the exact GIF filename (without extension).
     /// Only includes directions that have a native asset file — mirrored directions
@@ -291,7 +324,14 @@ final class SpriteAnimationManager: ObservableObject {
     /// Switches the sprite to a different animation directory. Clears all cached
     /// frames, rebuilds the filename map, reloads animations, and restarts patrol.
     func switchSpriteAssets(directoryName: String) {
-        activeSpriteDirectory = directoryName
+        beginSpriteSourceChange()
+
+        if activeCustomSpriteMetadata != nil {
+            activeCustomSpriteMetadata = nil
+        }
+        if activeSpriteDirectory != directoryName {
+            activeSpriteDirectory = directoryName
+        }
 
         switch directoryName {
         case "sky-animations":
@@ -310,13 +350,317 @@ final class SpriteAnimationManager: ObservableObject {
         preloadedFrameDurations.removeAll()
         preloadAllAnimations()
 
-        // Resume the animation that matches the current state
-        if spriteState == .resting && patrolPauseTimeRemaining <= 0 {
-            let walkDirection: SpriteDirection = patrolMovingEast ? .east : .west
-            setAnimation(type: .walking, direction: walkDirection)
-        } else {
-            setAnimation(type: .idle, direction: .south)
+        resumeAnimationForCurrentState()
+    }
+
+    /// Activates a cached Petdex atlas after validating and decoding all runtime
+    /// states. The current sprite is left untouched if any preparation step fails.
+    func switchToPetdexSprite(
+        metadata: CachedPetdexSprite,
+        spritesheetURL: URL
+    ) async throws {
+        try Task.checkCancellation()
+        let requestedSourceGeneration = beginSpriteSourceChange()
+        let rowRequests = Self.petdexAnimationRowSpecifications.map { rowSpecification in
+            PetdexAtlasRowRequest(
+                rowIndex: rowSpecification.rowIndex,
+                frameCount: rowSpecification.frameDurations.count
+            )
         }
+        let renderedSpritePixelSize = Int(Self.renderedSpriteSize)
+        let preparationTask = Task.detached(priority: .userInitiated) {
+            try Self.preparePetdexAtlasRows(
+                spritesheetURL: spritesheetURL,
+                rowRequests: rowRequests,
+                renderedSpritePixelSize: renderedSpritePixelSize
+            )
+        }
+        petdexPreparationTask = preparationTask
+
+        defer {
+            if spriteSourceGeneration == requestedSourceGeneration {
+                petdexPreparationTask = nil
+            }
+        }
+
+        let preparedAtlasRows = try await withTaskCancellationHandler {
+            try await preparationTask.value
+        } onCancel: {
+            preparationTask.cancel()
+        }
+
+        try Task.checkCancellation()
+        guard spriteSourceGeneration == requestedSourceGeneration else {
+            throw CancellationError()
+        }
+
+        let preparedAnimations = try preparePetdexAnimations(
+            preparedAtlasRows: preparedAtlasRows
+        )
+        try Task.checkCancellation()
+        guard spriteSourceGeneration == requestedSourceGeneration else {
+            throw CancellationError()
+        }
+
+        preloadedFrames = preparedAnimations.frames
+        preloadedFrameDurations = preparedAnimations.durations
+        if activeCustomSpriteMetadata != metadata {
+            activeCustomSpriteMetadata = metadata
+        }
+        let petdexSpriteIdentifier = "petdex:\(metadata.slug)"
+        if activeSpriteDirectory != petdexSpriteIdentifier {
+            activeSpriteDirectory = petdexSpriteIdentifier
+        }
+        resumeAnimationForCurrentState()
+
+        let totalFrameCount = preparedAnimations.frames.values
+            .flatMap(\.values)
+            .reduce(0) { partialResult, animationFrames in
+                partialResult + animationFrames.count
+            }
+        print("🐕 Sprite: Activated Petdex pet \(metadata.displayName) with \(totalFrameCount) mapped frames")
+    }
+
+    @discardableResult
+    private func beginSpriteSourceChange() -> Int {
+        spriteSourceGeneration &+= 1
+        petdexPreparationTask?.cancel()
+        petdexPreparationTask = nil
+        return spriteSourceGeneration
+    }
+
+    private func resumeAnimationForCurrentState() {
+        if powerMode == .dozing {
+            resetInterruptedBarkState()
+            setAnimation(type: .idle, direction: .south)
+            updateWalkingBobOffsetIfChanged(0)
+            return
+        }
+
+        switch spriteState {
+        case .resting:
+            resetInterruptedBarkState()
+            if patrolPauseTimeRemaining <= 0 {
+                let walkDirection: SpriteDirection = patrolMovingEast ? .east : .west
+                setAnimation(type: .walking, direction: walkDirection)
+            } else {
+                setAnimation(type: .idle, direction: .south)
+            }
+
+        case .flyingToCursor, .flyingToElement, .flyingBackToResting:
+            resetInterruptedBarkState()
+            let restoredFlightDirection: SpriteDirection
+            if case .flying? = activeAnimationType, let activeAnimationDirection {
+                restoredFlightDirection = activeAnimationDirection
+            } else {
+                restoredFlightDirection = directionBetween(
+                    from: spriteScreenPosition,
+                    to: flightEndPosition
+                )
+            }
+            setAnimation(type: .flying, direction: restoredFlightDirection)
+
+        case .assistingAtCursor:
+            if isPlayingMessageDeliveredLoop {
+                resetInterruptedBarkState()
+                setAnimation(type: .messageDelivered, direction: .south)
+                shouldLoopCurrentAnimation = true
+            } else if case .bark? = activeAnimationType {
+                // Restart the new sprite's bark from frame one while retaining
+                // the completion that resets its tilt and periodic-bark cycle.
+                setAnimation(type: .bark, direction: .south)
+            } else {
+                resetInterruptedBarkState()
+                setAnimation(type: .idle, direction: .south)
+            }
+
+        case .pointingAtElement:
+            if case .bark? = activeAnimationType {
+                setAnimation(type: .bark, direction: .south)
+            } else {
+                resetInterruptedBarkState()
+                setAnimation(type: .idle, direction: .south)
+            }
+        }
+    }
+
+    /// A looping replacement can never invoke a bark's non-looping completion.
+    /// Resolve that state explicitly so the sprite does not remain tilted and a
+    /// stale callback cannot fire during a later animation.
+    private func resetInterruptedBarkState() {
+        onNonLoopingAnimationComplete = nil
+        updateBarkHeadTiltOffsetIfChanged(0)
+    }
+
+    // MARK: - Petdex Atlas Extraction
+
+    private struct PetdexPreparedAnimations {
+        let frames: [SpriteAnimationType: [SpriteDirection: [NSImage]]]
+        let durations: [SpriteAnimationType: [SpriteDirection: [TimeInterval]]]
+    }
+
+    private struct PetdexAtlasRowRequest: Sendable {
+        let rowIndex: Int
+        let frameCount: Int
+    }
+
+    /// `CGImage` values are immutable and safe to hand back to the main actor.
+    /// AppKit image wrappers are deliberately created only after this payload arrives.
+    private struct PetdexPreparedAtlasRows: Sendable {
+        let framesByRow: [[CGImage]]
+    }
+
+    private struct PetdexAnimationRowSpecification {
+        let animationType: SpriteAnimationType
+        let rowIndex: Int
+        let frameDurations: [TimeInterval]
+        let directions: [SpriteDirection]
+    }
+
+    private static let petdexAnimationRowSpecifications = [
+        PetdexAnimationRowSpecification(
+            animationType: .idle,
+            rowIndex: 0,
+            frameDurations: [0.28, 0.11, 0.11, 0.14, 0.14, 0.32],
+            directions: SpriteDirection.allCases
+        ),
+        PetdexAnimationRowSpecification(
+            animationType: .walking,
+            rowIndex: 1,
+            frameDurations: [0.12, 0.12, 0.12, 0.12, 0.12, 0.12, 0.12, 0.22],
+            directions: [.east]
+        ),
+        PetdexAnimationRowSpecification(
+            animationType: .walking,
+            rowIndex: 2,
+            frameDurations: [0.12, 0.12, 0.12, 0.12, 0.12, 0.12, 0.12, 0.22],
+            directions: [.west]
+        ),
+        PetdexAnimationRowSpecification(
+            animationType: .bark,
+            rowIndex: 3,
+            frameDurations: [0.14, 0.14, 0.14, 0.28],
+            directions: [.south]
+        ),
+        PetdexAnimationRowSpecification(
+            animationType: .flying,
+            rowIndex: 4,
+            frameDurations: [0.14, 0.14, 0.14, 0.14, 0.28],
+            directions: SpriteDirection.allCases
+        ),
+        PetdexAnimationRowSpecification(
+            animationType: .messageDelivered,
+            rowIndex: 8,
+            frameDurations: [0.15, 0.15, 0.15, 0.15, 0.15, 0.28],
+            directions: SpriteDirection.allCases
+        ),
+    ]
+
+    private func preparePetdexAnimations(
+        preparedAtlasRows: PetdexPreparedAtlasRows
+    ) throws -> PetdexPreparedAnimations {
+        guard preparedAtlasRows.framesByRow.count == Self.petdexAnimationRowSpecifications.count else {
+            throw PetdexCatalogError.invalidSpritesheet
+        }
+
+        var preparedFrames: [SpriteAnimationType: [SpriteDirection: [NSImage]]] = [:]
+        var preparedDurations: [SpriteAnimationType: [SpriteDirection: [TimeInterval]]] = [:]
+
+        for (rowSpecificationIndex, rowSpecification) in Self.petdexAnimationRowSpecifications.enumerated() {
+            let preparedCGImages = preparedAtlasRows.framesByRow[rowSpecificationIndex]
+            guard preparedCGImages.count == rowSpecification.frameDurations.count else {
+                throw PetdexCatalogError.invalidSpritesheet
+            }
+            let rowFrames = preparedCGImages.map { preparedCGImage in
+                NSImage(
+                    cgImage: preparedCGImage,
+                    size: NSSize(
+                        width: Self.renderedSpriteSize,
+                        height: Self.renderedSpriteSize
+                    )
+                )
+            }
+
+            for direction in rowSpecification.directions {
+                preparedFrames[rowSpecification.animationType, default: [:]][direction] = rowFrames
+                preparedDurations[rowSpecification.animationType, default: [:]][direction] = rowSpecification.frameDurations
+            }
+        }
+
+        return PetdexPreparedAnimations(
+            frames: preparedFrames,
+            durations: preparedDurations
+        )
+    }
+
+    nonisolated private static func preparePetdexAtlasRows(
+        spritesheetURL: URL,
+        rowRequests: [PetdexAtlasRowRequest],
+        renderedSpritePixelSize: Int
+    ) throws -> PetdexPreparedAtlasRows {
+        try Task.checkCancellation()
+        let spritesheetData = try Data(contentsOf: spritesheetURL)
+        try Task.checkCancellation()
+
+        let validatedSpritesheet = try PetdexSpriteCatalog.validatedSpritesheetImage(
+            from: spritesheetData
+        )
+        var framesByRow: [[CGImage]] = []
+        framesByRow.reserveCapacity(rowRequests.count)
+
+        for rowRequest in rowRequests {
+            try Task.checkCancellation()
+            guard rowRequest.rowIndex < validatedSpritesheet.layout.rowCount else {
+                throw PetdexCatalogError.invalidSpritesheet
+            }
+            let rowFrames = try extractPetdexAtlasRow(
+                spritesheetImage: validatedSpritesheet.image,
+                layout: validatedSpritesheet.layout,
+                rowIndex: rowRequest.rowIndex,
+                frameCount: rowRequest.frameCount,
+                renderedSpritePixelSize: renderedSpritePixelSize
+            )
+            framesByRow.append(rowFrames)
+        }
+
+        return PetdexPreparedAtlasRows(framesByRow: framesByRow)
+    }
+
+    nonisolated private static func extractPetdexAtlasRow(
+        spritesheetImage: CGImage,
+        layout: PetdexSpriteAtlasLayout,
+        rowIndex: Int,
+        frameCount: Int,
+        renderedSpritePixelSize: Int
+    ) throws -> [CGImage] {
+        guard frameCount <= PetdexSpriteAtlasLayout.columnCount else {
+            throw PetdexCatalogError.invalidSpritesheet
+        }
+
+        var frames: [CGImage] = []
+        frames.reserveCapacity(frameCount)
+
+        for columnIndex in 0..<frameCount {
+            try Task.checkCancellation()
+            let frameRectangle = try layout.frameRectangle(
+                rowIndex: rowIndex,
+                columnIndex: columnIndex
+            )
+            guard let croppedFrame = spritesheetImage.cropping(to: frameRectangle) else {
+                throw PetdexCatalogError.invalidSpritesheet
+            }
+
+            frames.append(
+                scaledAndFlippedCGImage(
+                    cgImage: croppedFrame,
+                    targetSize: renderedSpritePixelSize,
+                    flipHorizontally: false,
+                    preservesAspectRatio: true
+                )
+            )
+        }
+
+        return frames
     }
 
     // MARK: - GIF Frame Extraction
@@ -397,8 +741,27 @@ final class SpriteAnimationManager: ObservableObject {
     private func scaleAndFlipFrame(
         cgImage: CGImage,
         targetSize: Int,
-        flipHorizontally: Bool
+        flipHorizontally: Bool,
+        preservesAspectRatio: Bool = false
     ) -> NSImage {
+        let scaledCGImage = Self.scaledAndFlippedCGImage(
+            cgImage: cgImage,
+            targetSize: targetSize,
+            flipHorizontally: flipHorizontally,
+            preservesAspectRatio: preservesAspectRatio
+        )
+        return NSImage(
+            cgImage: scaledCGImage,
+            size: NSSize(width: targetSize, height: targetSize)
+        )
+    }
+
+    nonisolated private static func scaledAndFlippedCGImage(
+        cgImage: CGImage,
+        targetSize: Int,
+        flipHorizontally: Bool,
+        preservesAspectRatio: Bool
+    ) -> CGImage {
         let colorSpace = cgImage.colorSpace ?? CGColorSpaceCreateDeviceRGB()
         guard let context = CGContext(
             data: nil,
@@ -409,7 +772,7 @@ final class SpriteAnimationManager: ObservableObject {
             space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else {
-            return NSImage(cgImage: cgImage, size: NSSize(width: targetSize, height: targetSize))
+            return cgImage
         }
 
         context.interpolationQuality = .none
@@ -419,13 +782,26 @@ final class SpriteAnimationManager: ObservableObject {
             context.scaleBy(x: -1.0, y: 1.0)
         }
 
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: targetSize, height: targetSize))
-
-        guard let scaledCGImage = context.makeImage() else {
-            return NSImage(cgImage: cgImage, size: NSSize(width: targetSize, height: targetSize))
+        let drawingRectangle: CGRect
+        if preservesAspectRatio {
+            let widthScale = CGFloat(targetSize) / CGFloat(cgImage.width)
+            let heightScale = CGFloat(targetSize) / CGFloat(cgImage.height)
+            let imageScale = min(widthScale, heightScale)
+            let drawingWidth = CGFloat(cgImage.width) * imageScale
+            let drawingHeight = CGFloat(cgImage.height) * imageScale
+            drawingRectangle = CGRect(
+                x: (CGFloat(targetSize) - drawingWidth) / 2,
+                y: (CGFloat(targetSize) - drawingHeight) / 2,
+                width: drawingWidth,
+                height: drawingHeight
+            )
+        } else {
+            drawingRectangle = CGRect(x: 0, y: 0, width: targetSize, height: targetSize)
         }
 
-        return NSImage(cgImage: scaledCGImage, size: NSSize(width: targetSize, height: targetSize))
+        context.draw(cgImage, in: drawingRectangle)
+
+        return context.makeImage() ?? cgImage
     }
 
     // MARK: - Animation Control
@@ -451,63 +827,175 @@ final class SpriteAnimationManager: ObservableObject {
 
         activeFrames = frames
         activeFrameDurations = durations
+        activeAnimationType = type
+        activeAnimationDirection = direction
         currentFrameIndex = 0
         frameTimeAccumulator = 0.0
         shouldLoopCurrentAnimation = (type != .bark && type != .messageDelivered)
-        currentFrame = activeFrames[0]
+        updateCurrentFrameIfChanged(activeFrames[0])
+        updateWalkingBobForCurrentAnimation()
     }
 
     // MARK: - Timer Lifecycle
 
-    /// Starts the 60fps animation timer that drives both frame stepping
-    /// and position interpolation.
+    /// Selects the sprite's energy policy and immediately applies the matching
+    /// animation and timer cadence. Dozing is intentionally limited to the
+    /// resting state so an in-progress interaction cannot be frozen halfway.
+    func setPowerMode(_ newPowerMode: SpriteAnimationPowerMode) {
+        if newPowerMode == .dozing, spriteState != .resting {
+            return
+        }
+
+        let previousPowerMode = powerMode
+        if previousPowerMode == newPowerMode {
+            refreshAnimationCadence()
+            return
+        }
+        powerMode = newPowerMode
+
+        switch newPowerMode {
+        case .active:
+            if previousPowerMode == .dozing {
+                resumeAnimationForCurrentState()
+            } else if previousPowerMode == .suspended,
+                      spriteState == .assistingAtCursor,
+                      !isPlayingMessageDeliveredLoop,
+                      case .idle? = activeAnimationType {
+                startAssistingBarkTimer()
+            }
+            refreshAnimationCadence(forceRestart: previousPowerMode != .active)
+
+        case .dozing:
+            updateIsFlyingIfChanged(false)
+            onFlightComplete = nil
+            stopPowerSensitiveBehaviorTimers()
+            updateIsSparkleActiveIfChanged(false)
+            updateSparkleFrameIndexIfChanged(0)
+            resetInterruptedBarkState()
+            setAnimation(type: .idle, direction: .south)
+            updateWalkingBobOffsetIfChanged(0)
+            refreshAnimationCadence(forceRestart: previousPowerMode != .dozing)
+
+        case .suspended:
+            invalidateAnimationTimer()
+            stopPowerSensitiveBehaviorTimers()
+        }
+    }
+
+    /// Existing callers continue to mean "make the visual runtime active."
     func startAnimationTimer() {
-        guard animationTimer == nil else { return }
+        setPowerMode(.active)
+    }
+
+    /// Existing callers continue to fully suspend animation when the overlay hides.
+    func stopAnimationTimer() {
+        setPowerMode(.suspended)
+    }
+
+    private var desiredAnimationTimerInterval: TimeInterval? {
+        switch powerMode {
+        case .suspended:
+            return nil
+        case .dozing:
+            return Self.stationaryAnimationInterval
+        case .active:
+            if isFlying || spriteState == .assistingAtCursor {
+                return Self.highMotionAnimationInterval
+            }
+            if spriteState == .resting, patrolPauseTimeRemaining <= 0 {
+                return Self.patrolAnimationInterval
+            }
+            return Self.stationaryAnimationInterval
+        }
+    }
+
+    private func refreshAnimationCadence(forceRestart: Bool = false) {
+        guard let desiredAnimationTimerInterval else {
+            invalidateAnimationTimer()
+            return
+        }
+
+        if !forceRestart,
+           animationTimer != nil,
+           animationTimerInterval == desiredAnimationTimerInterval {
+            return
+        }
+
+        invalidateAnimationTimer()
+        animationTimerInterval = desiredAnimationTimerInterval
         lastTickTime = CACurrentMediaTime()
-        animationTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.tick()
+        let scheduledTimerGeneration = animationTimerGeneration
+        let scheduledAnimationTimer = Timer.scheduledTimer(
+            withTimeInterval: desiredAnimationTimerInterval,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.animationTimerGeneration == scheduledTimerGeneration,
+                      self.powerMode != .suspended else {
+                    return
+                }
+                self.tick()
+            }
+        }
+        scheduledAnimationTimer.tolerance = desiredAnimationTimerInterval >= Self.stationaryAnimationInterval
+            ? desiredAnimationTimerInterval * 0.15
+            : desiredAnimationTimerInterval * 0.05
+        animationTimer = scheduledAnimationTimer
+    }
+
+    private func invalidateAnimationTimer() {
+        animationTimerGeneration += 1
+        animationTimer?.invalidate()
+        animationTimer = nil
+        animationTimerInterval = nil
+    }
+
+    private func stopPowerSensitiveBehaviorTimers() {
+        stopAssistingBarkTimer()
+        let shouldFinishPendingMessageDeliveredStop = messageDeliveredStopTask != nil
+        messageDeliveredStopTask?.cancel()
+        messageDeliveredStopTask = nil
+
+        if shouldFinishPendingMessageDeliveredStop {
+            isPlayingMessageDeliveredLoop = false
+            if spriteState == .assistingAtCursor {
+                setAnimation(type: .idle, direction: .south)
             }
         }
     }
 
-    /// Stops the animation timer and any behavioral timers.
-    /// Called when the overlay is hidden.
-    func stopAnimationTimer() {
-        animationTimer?.invalidate()
-        animationTimer = nil
-        stopAssistingBarkTimer()
-    }
-
-    /// Called every ~16.67ms. Advances the animation frame if enough time
-    /// has elapsed, and interpolates the sprite's position during flights.
+    /// Advances only the work allowed by the current power mode. The timer's
+    /// cadence is refreshed after the tick because patrol and flight completion
+    /// can change the required frequency synchronously.
     private func tick() {
+        guard powerMode != .suspended else { return }
+
         let now = CACurrentMediaTime()
         let deltaTime = now - lastTickTime
         lastTickTime = now
 
-        // Advance animation frame
         stepAnimationFrame(deltaTime: deltaTime)
 
-        // Interpolate position during flight
-        if isFlying {
-            stepFlightPosition(deltaTime: deltaTime)
+        if powerMode == .active {
+            if isFlying {
+                stepFlightPosition(deltaTime: deltaTime)
+            }
+
+            if spriteState == .resting {
+                stepPatrol(deltaTime: deltaTime)
+            } else {
+                updateWalkingBobOffsetIfChanged(0)
+            }
+
+            if spriteState == .assistingAtCursor {
+                updatePositionToFollowCursor()
+            }
+
+            stepSparkle(deltaTime: deltaTime)
         }
 
-        // Walk back and forth along the bottom edge while resting
-        if spriteState == .resting {
-            stepPatrol(deltaTime: deltaTime)
-        } else {
-            walkingBobOffset = 0
-        }
-
-        // When assisting at cursor, track the mouse position
-        if spriteState == .assistingAtCursor {
-            updatePositionToFollowCursor()
-        }
-
-        // Advance sparkle effect
-        stepSparkle(deltaTime: deltaTime)
+        refreshAnimationCadence()
     }
 
     /// Advances the sprite animation frame based on elapsed time and
@@ -516,29 +1004,43 @@ final class SpriteAnimationManager: ObservableObject {
         guard !activeFrames.isEmpty else { return }
 
         frameTimeAccumulator += deltaTime
+        var didAdvanceFrame = false
+        var frameAdvanceCount = 0
+        let maximumFrameAdvances = max(activeFrames.count * 2, 1)
 
-        let frameDuration = currentFrameIndex < activeFrameDurations.count
-            ? activeFrameDurations[currentFrameIndex]
-            : 0.1
+        while frameAdvanceCount < maximumFrameAdvances {
+            let frameDuration = currentFrameIndex < activeFrameDurations.count
+                ? max(activeFrameDurations[currentFrameIndex], 0.01)
+                : Self.stationaryAnimationInterval
+            guard frameTimeAccumulator >= frameDuration else { break }
 
-        if frameTimeAccumulator >= frameDuration {
             frameTimeAccumulator -= frameDuration
-
             let nextIndex = currentFrameIndex + 1
             if nextIndex >= activeFrames.count {
                 if shouldLoopCurrentAnimation {
                     currentFrameIndex = 0
                 } else {
-                    // Non-looping animation finished — stay on last frame
-                    onNonLoopingAnimationComplete?()
+                    frameTimeAccumulator = 0
+                    let completion = onNonLoopingAnimationComplete
                     onNonLoopingAnimationComplete = nil
+                    completion?()
                     return
                 }
             } else {
                 currentFrameIndex = nextIndex
             }
 
-            currentFrame = activeFrames[currentFrameIndex]
+            didAdvanceFrame = true
+            frameAdvanceCount += 1
+        }
+
+        if frameAdvanceCount == maximumFrameAdvances {
+            frameTimeAccumulator = 0
+        }
+
+        if didAdvanceFrame {
+            updateCurrentFrameIfChanged(activeFrames[currentFrameIndex])
+            updateWalkingBobForCurrentAnimation()
         }
     }
 
@@ -558,8 +1060,9 @@ final class SpriteAnimationManager: ObservableObject {
         // Duration based on distance at ~900 pts/sec, clamped to 0.4s–1.5s
         flightDuration = min(max(Double(distance) / Double(Self.flightSpeedPointsPerSecond), 0.4), 1.5)
 
-        isFlying = true
+        updateIsFlyingIfChanged(true)
         onFlightComplete = completion
+        refreshAnimationCadence()
     }
 
     /// Advances the flight interpolation by deltaTime. Uses cubic bezier easing:
@@ -578,11 +1081,11 @@ final class SpriteAnimationManager: ObservableObject {
 
         let interpolatedX = flightStartPosition.x + (flightEndPosition.x - flightStartPosition.x) * easedProgress
         let interpolatedY = flightStartPosition.y + (flightEndPosition.y - flightStartPosition.y) * easedProgress
-        spriteScreenPosition = CGPoint(x: interpolatedX, y: interpolatedY)
+        updateSpriteScreenPositionIfChanged(CGPoint(x: interpolatedX, y: interpolatedY))
 
         if linearProgress >= 1.0 {
-            isFlying = false
-            spriteScreenPosition = flightEndPosition
+            updateIsFlyingIfChanged(false)
+            updateSpriteScreenPositionIfChanged(flightEndPosition)
             onFlightComplete?()
             onFlightComplete = nil
         }
@@ -603,7 +1106,7 @@ final class SpriteAnimationManager: ObservableObject {
         // If in a turnaround pause, count down and resume walking when done
         if patrolPauseTimeRemaining > 0 {
             patrolPauseTimeRemaining -= deltaTime
-            walkingBobOffset = 0
+            updateWalkingBobOffsetIfChanged(0)
             if patrolPauseTimeRemaining <= 0 {
                 patrolPauseTimeRemaining = 0
                 patrolTimeSinceResume = 0
@@ -636,9 +1139,9 @@ final class SpriteAnimationManager: ObservableObject {
         // asymptotically approaching but never reaching the boundary.
         if distanceToBoundary < 2.0 {
             let snappedX = targetBoundary
-            spriteScreenPosition = CGPoint(x: snappedX, y: spriteScreenPosition.y)
+            updateSpriteScreenPositionIfChanged(CGPoint(x: snappedX, y: spriteScreenPosition.y))
             patrolPauseTimeRemaining = Self.patrolTurnaroundPauseDuration
-            walkingBobOffset = 0
+            updateWalkingBobOffsetIfChanged(0)
             setAnimation(type: .idle, direction: .south)
             print("🐕 Patrol: reached \(patrolMovingEast ? "right" : "left") boundary, turning \(patrolMovingEast ? "west" : "east")")
             return
@@ -657,10 +1160,6 @@ final class SpriteAnimationManager: ObservableObject {
         let displacement = Self.patrolWalkingSpeed * speedMultiplier * CGFloat(deltaTime) * (patrolMovingEast ? 1.0 : -1.0)
         var newX = spriteScreenPosition.x + displacement
 
-        // Vertical bob synced to animation frame (~1.5pt amplitude)
-        let bobPhase = CGFloat(currentFrameIndex) * .pi / max(CGFloat(activeFrames.count), 1.0) * 2.0
-        walkingBobOffset = sin(bobPhase) * 1.5
-
         // Clamp to boundary (belt-and-suspenders — snap above should catch this)
         if patrolMovingEast && newX >= rightBoundary {
             newX = rightBoundary
@@ -674,7 +1173,7 @@ final class SpriteAnimationManager: ObservableObject {
             print("🐕 Patrol: reached left boundary, turning east")
         }
 
-        spriteScreenPosition = CGPoint(x: newX, y: spriteScreenPosition.y)
+        updateSpriteScreenPositionIfChanged(CGPoint(x: newX, y: spriteScreenPosition.y))
     }
 
     /// When assisting at cursor, smoothly track the mouse position.
@@ -693,11 +1192,20 @@ final class SpriteAnimationManager: ObservableObject {
         let targetX = localX + 20
         let targetY = localY + 10
 
+        let remainingDistance = hypot(
+            targetX - spriteScreenPosition.x,
+            targetY - spriteScreenPosition.y
+        )
+        if remainingDistance <= Self.cursorPositionSnapDistance {
+            updateSpriteScreenPositionIfChanged(CGPoint(x: targetX, y: targetY))
+            return
+        }
+
         // Spring-like smoothing toward the target (lerp factor per frame)
         let smoothingFactor: CGFloat = 0.15
         let newX = spriteScreenPosition.x + (targetX - spriteScreenPosition.x) * smoothingFactor
         let newY = spriteScreenPosition.y + (targetY - spriteScreenPosition.y) * smoothingFactor
-        spriteScreenPosition = CGPoint(x: newX, y: newY)
+        updateSpriteScreenPositionIfChanged(CGPoint(x: newX, y: newY))
     }
 
     // MARK: - State Machine
@@ -723,14 +1231,26 @@ final class SpriteAnimationManager: ObservableObject {
     ///     bottom-left origin). Ignored for states that don't require a target.
     ///   - screenFrame: The NSScreen frame the sprite is on (AppKit coords).
     func transitionTo(_ newState: SpriteState, targetPosition: CGPoint?, screenFrame: CGRect) {
+        if powerMode == .dozing, newState != .resting {
+            return
+        }
+        if (newState == .flyingToCursor || newState == .flyingToElement), targetPosition == nil {
+            return
+        }
+
         let previousState = spriteState
-        spriteState = newState
-        currentScreenFrame = screenFrame
+        if previousState != newState,
+           activeAnimationType == .bark {
+            resetInterruptedBarkState()
+        }
+        updateSpriteStateIfChanged(newState)
+        updateCurrentScreenFrameIfChanged(screenFrame)
+        defer { refreshAnimationCadence() }
 
         switch newState {
         case .resting:
             stopAssistingBarkTimer()
-            isFlying = false
+            updateIsFlyingIfChanged(false)
             onFlightComplete = nil
 
             // If arriving from a flight (flyingBackToResting), the sprite is already
@@ -738,10 +1258,10 @@ final class SpriteAnimationManager: ObservableObject {
             let bottomY = screenFrame.height - (Self.renderedSpriteSize / 2.0)
             if previousState == .flyingBackToResting {
                 // Keep the current X so the patrol starts from where the sprite landed
-                spriteScreenPosition = CGPoint(x: spriteScreenPosition.x, y: bottomY)
+                updateSpriteScreenPositionIfChanged(CGPoint(x: spriteScreenPosition.x, y: bottomY))
             } else {
                 let restPosition = restingPosition(for: screenFrame)
-                spriteScreenPosition = restPosition
+                updateSpriteScreenPositionIfChanged(restPosition)
             }
 
             // Begin walking patrol — pick direction based on which boundary is closer
@@ -749,13 +1269,18 @@ final class SpriteAnimationManager: ObservableObject {
             patrolMovingEast = spriteScreenPosition.x <= screenMidX
             patrolPauseTimeRemaining = 0
             let walkDirection: SpriteDirection = patrolMovingEast ? .east : .west
-            setAnimation(type: .walking, direction: walkDirection)
-            isVisible = true
+            if powerMode == .dozing {
+                setAnimation(type: .idle, direction: .south)
+                updateWalkingBobOffsetIfChanged(0)
+            } else {
+                setAnimation(type: .walking, direction: walkDirection)
+            }
+            updateIsVisibleIfChanged(true)
 
         case .flyingToCursor:
             stopAssistingBarkTimer()
             guard let targetScreenPoint = targetPosition else { return }
-            isVisible = true
+            updateIsVisibleIfChanged(true)
             currentFlightIsReturnTrip = false
 
             // Convert the AppKit cursor position to SwiftUI coordinates
@@ -771,14 +1296,14 @@ final class SpriteAnimationManager: ObservableObject {
             }
 
         case .assistingAtCursor:
-            isFlying = false
+            updateIsFlyingIfChanged(false)
             onFlightComplete = nil
             // Play sparkle effect on arrival, then bark
             triggerSparkleEffect(at: spriteScreenPosition)
-            barkHeadTiltOffset = -1.5
+            updateBarkHeadTiltOffsetIfChanged(-1.5)
             setAnimation(type: .bark, direction: .south)
             onNonLoopingAnimationComplete = { [weak self] in
-                self?.barkHeadTiltOffset = 0
+                self?.updateBarkHeadTiltOffsetIfChanged(0)
                 self?.setAnimation(type: .idle, direction: .south)
                 self?.startAssistingBarkTimer()
             }
@@ -798,19 +1323,19 @@ final class SpriteAnimationManager: ObservableObject {
             }
 
         case .pointingAtElement:
-            isFlying = false
+            updateIsFlyingIfChanged(false)
             onFlightComplete = nil
             // Play bark animation once with head-tilt, then switch to idle
-            barkHeadTiltOffset = -1.5
+            updateBarkHeadTiltOffsetIfChanged(-1.5)
             setAnimation(type: .bark, direction: .south)
             onNonLoopingAnimationComplete = { [weak self] in
-                self?.barkHeadTiltOffset = 0
+                self?.updateBarkHeadTiltOffsetIfChanged(0)
                 self?.setAnimation(type: .idle, direction: .south)
             }
 
         case .flyingBackToResting:
             stopAssistingBarkTimer()
-            isVisible = true
+            updateIsVisibleIfChanged(true)
             currentFlightIsReturnTrip = true
             let restPosition = restingPosition(for: screenFrame)
 
@@ -834,24 +1359,38 @@ final class SpriteAnimationManager: ObservableObject {
     /// it's occasionally "commenting" or getting attention.
     private func startAssistingBarkTimer() {
         stopAssistingBarkTimer()
+        guard powerMode == .active, spriteState == .assistingAtCursor else { return }
         scheduleNextAssistingBark()
     }
 
     /// Schedules one bark after a random delay, then reschedules itself.
     private func scheduleNextAssistingBark() {
+        guard powerMode == .active, spriteState == .assistingAtCursor else { return }
+
         let randomInterval = TimeInterval.random(in: Self.assistingBarkIntervalRange)
-        assistingBarkTimer = Timer.scheduledTimer(withTimeInterval: randomInterval, repeats: false) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, self.spriteState == .assistingAtCursor else { return }
-                self.barkHeadTiltOffset = -1.5  // Subtle upward tilt during bark
+        let scheduledBarkTimer = Timer.scheduledTimer(withTimeInterval: randomInterval, repeats: false) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.powerMode == .active,
+                      self.spriteState == .assistingAtCursor else {
+                    return
+                }
+                self.updateBarkHeadTiltOffsetIfChanged(-1.5)
                 self.setAnimation(type: .bark, direction: .south)
                 self.onNonLoopingAnimationComplete = { [weak self] in
-                    self?.barkHeadTiltOffset = 0
-                    self?.setAnimation(type: .idle, direction: .south)
-                    self?.scheduleNextAssistingBark()
+                    guard let self,
+                          self.powerMode == .active,
+                          self.spriteState == .assistingAtCursor else {
+                        return
+                    }
+                    self.updateBarkHeadTiltOffsetIfChanged(0)
+                    self.setAnimation(type: .idle, direction: .south)
+                    self.scheduleNextAssistingBark()
                 }
             }
         }
+        scheduledBarkTimer.tolerance = min(randomInterval * 0.1, 0.5)
+        assistingBarkTimer = scheduledBarkTimer
     }
 
     /// Whether the message-delivered animation is currently looping.
@@ -865,10 +1404,11 @@ final class SpriteAnimationManager: ObservableObject {
     /// Called when Claude begins streaming a response. Cancels any pending
     /// bark timer so they don't overlap.
     func startMessageDeliveredLoop() {
-        guard spriteState == .assistingAtCursor else { return }
+        guard powerMode != .dozing, spriteState == .assistingAtCursor else { return }
         messageDeliveredStopTask?.cancel()
         messageDeliveredStopTask = nil
         stopAssistingBarkTimer()
+        resetInterruptedBarkState()
         isPlayingMessageDeliveredLoop = true
         setAnimation(type: .messageDelivered, direction: .south)
         // Override the non-looping default for messageDelivered — we want it to loop
@@ -879,11 +1419,26 @@ final class SpriteAnimationManager: ObservableObject {
     /// returns to idle south and resumes periodic bark.
     func stopMessageDeliveredLoop() {
         messageDeliveredStopTask?.cancel()
+        messageDeliveredStopTask = nil
+
+        guard powerMode == .active else {
+            isPlayingMessageDeliveredLoop = false
+            if spriteState == .assistingAtCursor {
+                setAnimation(type: .idle, direction: .south)
+            }
+            return
+        }
+
         messageDeliveredStopTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard !Task.isCancelled else { return }
             guard let self else { return }
             self.isPlayingMessageDeliveredLoop = false
+            self.messageDeliveredStopTask = nil
+            guard self.powerMode == .active,
+                  self.spriteState == .assistingAtCursor else {
+                return
+            }
             self.setAnimation(type: .idle, direction: .south)
             self.startAssistingBarkTimer()
         }
@@ -900,10 +1455,10 @@ final class SpriteAnimationManager: ObservableObject {
     /// Triggers the arrival sparkle effect at the given position.
     /// The sparkle plays over ~0.3 seconds with 4 frames, driven by the tick timer.
     private func triggerSparkleEffect(at position: CGPoint) {
-        sparklePosition = position
+        updateSparklePositionIfChanged(position)
         sparkleElapsedTime = 0
-        sparkleFrameIndex = 0
-        isSparkleActive = true
+        updateSparkleFrameIndexIfChanged(0)
+        updateIsSparkleActiveIfChanged(true)
     }
 
     /// Advances the sparkle animation. Called from tick() each frame.
@@ -913,13 +1468,13 @@ final class SpriteAnimationManager: ObservableObject {
 
         let progress = sparkleElapsedTime / Self.sparkleTotalDuration
         if progress >= 1.0 {
-            isSparkleActive = false
-            sparkleFrameIndex = 0
+            updateIsSparkleActiveIfChanged(false)
+            updateSparkleFrameIndexIfChanged(0)
             return
         }
 
         // 4 frames spread across the duration
-        sparkleFrameIndex = min(Int(progress * 4.0), 3)
+        updateSparkleFrameIndexIfChanged(min(Int(progress * 4.0), 3))
     }
 
     // MARK: - Cubic Bezier Easing
@@ -969,6 +1524,75 @@ final class SpriteAnimationManager: ObservableObject {
     }
 
     // MARK: - Helpers
+
+    private func updateCurrentFrameIfChanged(_ newFrame: NSImage) {
+        guard currentFrame !== newFrame else { return }
+        currentFrame = newFrame
+    }
+
+    private func updateSpriteScreenPositionIfChanged(_ newPosition: CGPoint) {
+        guard spriteScreenPosition != newPosition else { return }
+        spriteScreenPosition = newPosition
+    }
+
+    private func updateSpriteStateIfChanged(_ newState: SpriteState) {
+        guard spriteState != newState else { return }
+        spriteState = newState
+    }
+
+    private func updateIsVisibleIfChanged(_ newVisibility: Bool) {
+        guard isVisible != newVisibility else { return }
+        isVisible = newVisibility
+    }
+
+    private func updateCurrentScreenFrameIfChanged(_ newScreenFrame: CGRect) {
+        guard currentScreenFrame != newScreenFrame else { return }
+        currentScreenFrame = newScreenFrame
+    }
+
+    private func updateIsFlyingIfChanged(_ newIsFlying: Bool) {
+        guard isFlying != newIsFlying else { return }
+        isFlying = newIsFlying
+    }
+
+    private func updateIsSparkleActiveIfChanged(_ newIsSparkleActive: Bool) {
+        guard isSparkleActive != newIsSparkleActive else { return }
+        isSparkleActive = newIsSparkleActive
+    }
+
+    private func updateSparkleFrameIndexIfChanged(_ newFrameIndex: Int) {
+        guard sparkleFrameIndex != newFrameIndex else { return }
+        sparkleFrameIndex = newFrameIndex
+    }
+
+    private func updateSparklePositionIfChanged(_ newPosition: CGPoint) {
+        guard sparklePosition != newPosition else { return }
+        sparklePosition = newPosition
+    }
+
+    private func updateWalkingBobOffsetIfChanged(_ newOffset: CGFloat) {
+        guard abs(walkingBobOffset - newOffset) > 0.001 else { return }
+        walkingBobOffset = newOffset
+    }
+
+    private func updateWalkingBobForCurrentAnimation() {
+        guard powerMode == .active,
+              spriteState == .resting,
+              patrolPauseTimeRemaining <= 0,
+              case .walking? = activeAnimationType else {
+            updateWalkingBobOffsetIfChanged(0)
+            return
+        }
+
+        let frameCount = max(CGFloat(activeFrames.count), 1.0)
+        let bobPhase = CGFloat(currentFrameIndex) * .pi / frameCount * 2.0
+        updateWalkingBobOffsetIfChanged(sin(bobPhase) * 1.5)
+    }
+
+    private func updateBarkHeadTiltOffsetIfChanged(_ newOffset: CGFloat) {
+        guard abs(barkHeadTiltOffset - newOffset) > 0.001 else { return }
+        barkHeadTiltOffset = newOffset
+    }
 
     /// Converts an AppKit screen point (bottom-left origin, global coordinates)
     /// to SwiftUI coordinates (top-left origin, local to the screen).

@@ -98,18 +98,41 @@ struct ChatSidebarView: View {
             return .handled
         }
         .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                NSApp.activate(ignoringOtherApps: true)
-                isInputFieldFocused = true
+            requestInputFocusIfVisualRuntimeIsActive()
+        }
+        .onChange(of: companionManager.isVisualRuntimePaused) { _, isPaused in
+            if isPaused {
+                isInputFieldFocused = false
+            } else {
+                requestInputFocusIfVisualRuntimeIsActive()
             }
         }
         .onChange(of: companionManager.pendingFollowUpScreenshotData) { _, _ in
-            DispatchQueue.main.async {
-                isInputFieldFocused = true
+            if !companionManager.isVisualRuntimePaused,
+               !companionManager.isSleeping {
+                DispatchQueue.main.async {
+                    isInputFieldFocused = true
+                }
             }
         }
         .onDisappear {
             speechTranscriptionManager.cancelActiveSpeechOperation()
+        }
+    }
+
+    private func requestInputFocusIfVisualRuntimeIsActive() {
+        guard !companionManager.isVisualRuntimePaused,
+              !companionManager.isSleeping else {
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            guard !companionManager.isVisualRuntimePaused,
+                  !companionManager.isSleeping else {
+                return
+            }
+            NSApp.activate(ignoringOtherApps: true)
+            isInputFieldFocused = true
         }
     }
 
