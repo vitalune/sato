@@ -6,16 +6,21 @@
         <description>Most recent updates to Sato</description>
         <language>en</language>
         <item>
+            <title>1.3.0</title>
+            <pubDate>Sat, 29 Aug 2026 16:11:34 -0400</pubDate>
+            <sparkle:version>10300</sparkle:version>
+            <sparkle:shortVersionString>1.3.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:releaseNotesLink>https://sato.host/Sato-1.3.0.md</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/vitalune/sato/releases/download/v1.3.0/Sato-1.3.0.dmg" length="65832721" type="application/octet-stream" sparkle:edSignature="5UJQJcL6rCSKf8yV+IS2RUAjor7nBbwzlVqjqP/bfzBsCOU0+mnczlZXzpIfRHM/KE6/g0P/saBVHtimwAKuBw=="/>
+        </item>
+        <item>
             <title>1.2.8</title>
             <pubDate>Thu, 13 Aug 2026 12:28:34 -0700</pubDate>
             <sparkle:version>10208</sparkle:version>
             <sparkle:shortVersionString>1.2.8</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
-            <enclosure
-                url="https://github.com/vitalune/sato/releases/download/v1.2.8/Sato-1.2.8.dmg"
-                length="65573242"
-                type="application/octet-stream"
-                sparkle:edSignature="A6HwApecQtbKseAWInZKxlc6ZNaK+6Uk/DrLosfiJvlzP1KRby518hRDRb5YCS2DCZiHXi5ZNOZZ0R1K02ayDQ==" />
+            <enclosure url="https://github.com/vitalune/sato/releases/download/v1.2.8/Sato-1.2.8.dmg" length="65573242" type="application/octet-stream" sparkle:edSignature="A6HwApecQtbKseAWInZKxlc6ZNaK+6Uk/DrLosfiJvlzP1KRby518hRDRb5YCS2DCZiHXi5ZNOZZ0R1K02ayDQ=="/>
         </item>
         <item>
             <title>Version 1.1.1</title>
@@ -28,82 +33,7 @@
                 <p>Quick fix release. v1.1.0's auto-updater metadata didn't match the appcast feed, which made some users see "update available" prompts even after installing v1.1.0. v1.1.1 corrects this — once you're on v1.1.1, the prompt stops.</p>
                 <p>No feature changes from v1.1.0. Pure metadata cleanup.</p>
             ]]></description>
-            <enclosure
-                url="https://github.com/vitalune/sato/releases/download/v1.1.1/Sato-1.1.1.dmg"
-                length="66034198"
-                type="application/octet-stream"
-                sparkle:edSignature="GMqi3D5ZeRWXz0+6Re8gW1SsNbyj2hsMO2qEQo1hOrWwIKCpZ0OIZS1Gz97tRNylIICTL8OliASW8MvwMFJxBA==" />
-        </item>
-        <item>
-            <title>Version 1.1.0</title>
-            <pubDate>Fri, 24 Apr 2026 23:32:44 -0400</pubDate>
-            <sparkle:version>10100</sparkle:version>
-            <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
-            <description><![CDATA[
-                <h2>Multi-Provider AI Support</h2>
-                <p>Sato now talks to more than just Claude. Pick from Anthropic, OpenAI, or Ollama, and switch between models without leaving the menu bar.</p>
-                <h3>What's new</h3>
-                <ul>
-                    <li>Three AI providers: Anthropic (Opus 4.7, Sonnet 4.6, Haiku 4.5), OpenAI (GPT-5.4, Mini, Nano), and Ollama (local or cloud)</li>
-                    <li>Context Profiles can override your default provider and model</li>
-                    <li>Markdown now renders properly in responses</li>
-                    <li>Fixed permissions screen getting stuck after granting Screen Recording</li>
-                    <li>Stable bundle identifier going forward</li>
-                </ul>
-                <p><strong>Heads up:</strong> Bundle identifier changed under the hood, so macOS will ask for permissions one more time on first launch. After this release, future updates are seamless.</p>
-            ]]></description>
-            <enclosure
-                url="https://github.com/vitalune/sato/releases/download/v1.1.0/Sato-1.1.0.dmg"
-                length="66034188"
-                type="application/octet-stream"
-                sparkle:edSignature="i+S/S+R1S5J+oL7qaq7SB4MB3ei31aAjpQK5gphvjXeHeJLTKzbVM2hU8E7US3ZA54nHLqkXWX9Gl7CY3QBLBA==" />
-        </item>
-        <item>
-            <title>Version 1.0.1</title>
-            <pubDate>Fri, 24 Apr 2026 03:25:00 +0000</pubDate>
-            <sparkle:version>10001</sparkle:version>
-            <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
-            <description><![CDATA[
-                <h2>Signed & Notarized</h2>
-                <p>Sato is now signed with an Apple Developer ID and notarized by Apple. No more "unidentified developer" warning on first launch.</p>
-                <ul>
-                    <li>Apple Developer ID signed</li>
-                    <li>Notarized by Apple</li>
-                    <li>Smooth first-launch experience on macOS Sequoia and later</li>
-                </ul>
-            ]]></description>
-            <enclosure
-                url="https://github.com/vitalune/sato/releases/download/v1.0.1/Sato-1.0.1.dmg"
-                length="65730095"
-                type="application/octet-stream"
-                sparkle:edSignature="/6wGkYsPKEi9M9udvz53OjP7oMnC8tuKoccqb40hxz5KBZoAFrEHUnHwJl2mh5Uiit0Bz7KTtOMKcRNkdHvuCQ==" />
-        </item>
-        <item>
-            <title>Version 1.0.0</title>
-            <pubDate>Tue, 21 Apr 2026 18:50:48 +0000</pubDate>
-            <description><![CDATA[
-                <h2>Sato 1.0.0 — Initial Release</h2>
-                <p>The first public release of Sato.</p>
-                <h3>Features</h3>
-                <ul>
-                    <li>Five pixel art companions: Max, Sky, Lexi, Rover, and Paris</li>
-                    <li>Screenshot-based AI assistance via Ctrl+Option</li>
-                    <li>Chat sidebar for follow-up conversations</li>
-                    <li>Context profiles for customizing AI behavior</li>
-                    <li>Stealth mode</li>
-                    <li>Automatic updates via Sparkle</li>
-                </ul>
-            ]]></description>
-            <enclosure
-                url="https://github.com/vitalune/sato/releases/download/v1.0.0/Sato-1.0.0.dmg"
-                sparkle:version="1"
-                sparkle:shortVersionString="1.0.0"
-                sparkle:edSignature="BVkKhGUhc+H8K42s3EZa11lg1znKFvxe4LN3Po1sgqaslG4T0NM/uVVXX+9+6PL3w367jVathNJgyj3dKhykCQ=="
-                length="65770585"
-                type="application/octet-stream"/>
-            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/vitalune/sato/releases/download/v1.1.1/Sato-1.1.1.dmg" length="66034198" type="application/octet-stream" sparkle:edSignature="GMqi3D5ZeRWXz0+6Re8gW1SsNbyj2hsMO2qEQo1hOrWwIKCpZ0OIZS1Gz97tRNylIICTL8OliASW8MvwMFJxBA=="/>
         </item>
     </channel>
 </rss>
