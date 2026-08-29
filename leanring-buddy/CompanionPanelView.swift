@@ -11,8 +11,17 @@ import SwiftUI
 
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
+    @ObservedObject private var spriteAnimationManager: SpriteAnimationManager
     let updaterController: UpdaterController
     @State private var emailInput: String = ""
+
+    init(companionManager: CompanionManager, updaterController: UpdaterController) {
+        _companionManager = ObservedObject(wrappedValue: companionManager)
+        _spriteAnimationManager = ObservedObject(
+            wrappedValue: companionManager.spriteAnimationManager
+        )
+        self.updaterController = updaterController
+    }
 
     // MARK: - Context Profile Editor State
     @State private var isEditingProfile: Bool = false
@@ -86,6 +95,12 @@ struct CompanionPanelView: View {
                     .frame(height: 8)
 
                 stealthModeToggleRow
+                    .padding(.horizontal, 16)
+
+                Spacer()
+                    .frame(height: 8)
+
+                automaticSleepToggleRow
                     .padding(.horizontal, 16)
 
                 Spacer()
@@ -663,6 +678,38 @@ struct CompanionPanelView: View {
         .padding(.vertical, 4)
     }
 
+    private var automaticSleepToggleRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "moon.zzz")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Auto Sleep")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(DS.Colors.textSecondary)
+                    Text("Dozes after 1 min, sleeps after 15")
+                        .font(.system(size: 9))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+            }
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { companionManager.isAutomaticSleepEnabled },
+                set: { companionManager.setAutomaticSleepEnabled($0) }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .tint(DS.Colors.accent)
+            .scaleEffect(0.8)
+        }
+        .padding(.vertical, 4)
+    }
+
     // MARK: - Model Picker
 
     private var modelPickerRow: some View {
@@ -1113,37 +1160,77 @@ struct CompanionPanelView: View {
     // MARK: - Sprite Picker
 
     private var spritePickerRow: some View {
-        HStack {
-            Text("Sprite")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(DS.Colors.textSecondary)
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text("Sprite")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
 
-            Spacer()
+                Spacer()
 
-            HStack(spacing: 0) {
-                spriteOptionButton(label: "Max", directoryName: "max-animations")
-                spriteOptionButton(label: "Sky", directoryName: "sky-animations")
-                spriteOptionButton(label: "Lexi", directoryName: "lexi-animations")
-                spriteOptionButton(label: "Rover", directoryName: "rover-animations")
-                spriteOptionButton(label: "Paris", directoryName: "paris-animations")
+                HStack(spacing: 0) {
+                    spriteOptionButton(label: "Max", directoryName: "max-animations")
+                    spriteOptionButton(label: "Sky", directoryName: "sky-animations")
+                    spriteOptionButton(label: "Lexi", directoryName: "lexi-animations")
+                    spriteOptionButton(label: "Rover", directoryName: "rover-animations")
+                    spriteOptionButton(label: "Paris", directoryName: "paris-animations")
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
             }
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
-            )
+
+            Button {
+                NotificationCenter.default.post(
+                    name: .clickyShowCustomSpritePicker,
+                    object: nil
+                )
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "pawprint.fill")
+                        .font(.system(size: 9, weight: .medium))
+                    Text("Custom sprites")
+                        .font(.system(size: 10, weight: .medium))
+
+                    if let activeCustomSpriteMetadata = spriteAnimationManager.activeCustomSpriteMetadata {
+                        Text(
+                            "\(activeCustomSpriteMetadata.displayName) "
+                                + "by \(activeCustomSpriteMetadata.creatorName)"
+                        )
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundColor(DS.Colors.textTertiary)
+                            .lineLimit(1)
+
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(DS.Colors.success)
+                    }
+
+                    Spacer()
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+                .foregroundColor(DS.Colors.accentText)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .accessibilityHint("Browse community pets from Petdex")
         }
         .padding(.vertical, 4)
     }
 
     private func spriteOptionButton(label: String, directoryName: String) -> some View {
-        let isSelected = companionManager.spriteAnimationManager.activeSpriteDirectory == directoryName
+        let isSelected = spriteAnimationManager.activeSpriteDirectory == directoryName
         return Button(action: {
-            companionManager.spriteAnimationManager.switchSpriteAssets(directoryName: directoryName)
-            UserDefaults.standard.set(directoryName, forKey: "activeSpriteDirectory")
+            companionManager.selectBundledSprite(directoryName: directoryName)
         }) {
             Text(label)
                 .font(.system(size: 11, weight: .medium))
@@ -1686,6 +1773,9 @@ struct CompanionPanelView: View {
     }
 
     private var statusDotColor: Color {
+        if companionManager.isSleeping || companionManager.isDozing {
+            return DS.Colors.info
+        }
         if !companionManager.isOverlayVisible {
             return DS.Colors.textTertiary
         }
@@ -1695,6 +1785,12 @@ struct CompanionPanelView: View {
     private var statusText: String {
         if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
             return "Setup"
+        }
+        if companionManager.isSleeping {
+            return "Sleeping"
+        }
+        if companionManager.isDozing {
+            return "Dozing"
         }
         if !companionManager.isOverlayVisible {
             return "Ready"

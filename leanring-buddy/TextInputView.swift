@@ -10,6 +10,7 @@
 import SwiftUI
 
 struct TextInputView: View {
+    @ObservedObject var companionManager: CompanionManager
     @ObservedObject var speechTranscriptionManager: LocalSpeechTranscriptionManager
     let speechContextPrompt: String?
     /// Called with the user's question text when they press Enter.
@@ -67,21 +68,40 @@ struct TextInputView: View {
                 .shadow(color: .black.opacity(0.4), radius: 12, x: 0, y: 4)
         )
         .onAppear {
-            // The interactive overlay window is already activated and made key
-            // by showInteractiveOverlay(). Set focus after a short delay so
-            // the SwiftUI view hierarchy has fully laid out and the window's
-            // first responder chain is ready to accept the text field.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                // Re-activate in case another window stole focus in the gap
-                NSApp.activate(ignoringOtherApps: true)
-                isTextFieldFocused = true
+            requestInputFocusIfVisualRuntimeIsActive()
+        }
+        .onChange(of: companionManager.isVisualRuntimePaused) { _, isPaused in
+            if isPaused {
+                isTextFieldFocused = false
+            } else {
+                requestInputFocusIfVisualRuntimeIsActive()
             }
-            // Fallback: if the first attempt didn't stick (can happen when
-            // NSHostingView hasn't finished layout), try once more.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                if !isTextFieldFocused {
-                    isTextFieldFocused = true
-                }
+        }
+    }
+
+    private func requestInputFocusIfVisualRuntimeIsActive() {
+        guard !companionManager.isVisualRuntimePaused,
+              !companionManager.isSleeping else {
+            return
+        }
+
+        // The interactive window is activated by OverlayWindowManager. Delay
+        // focus until its hosting hierarchy and responder chain are ready.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            guard !companionManager.isVisualRuntimePaused,
+                  !companionManager.isSleeping else {
+                return
+            }
+            NSApp.activate(ignoringOtherApps: true)
+            isTextFieldFocused = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            guard !companionManager.isVisualRuntimePaused,
+                  !companionManager.isSleeping else {
+                return
+            }
+            if !isTextFieldFocused {
+                isTextFieldFocused = true
             }
         }
     }

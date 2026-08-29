@@ -6,17 +6,18 @@ An AI desktop companion with a pixel art pet.
 
 ## What it is
 
-Sato is a macOS menu bar app that pairs a screen-aware AI assistant with an animated pixel art companion. Select a region of your screen, type or privately dictate a question, and get a response in a speech bubble -- or open the chat sidebar for longer conversations. Choose from five sprites (Max, Sky, Lexi, Rover, Paris) and customize Sato's behavior with context profiles.
+Sato is a macOS menu bar app that pairs a screen-aware AI assistant with an animated pixel art companion. Select a region of your screen, type or privately dictate a question, and get a response in a speech bubble -- or open the chat sidebar for longer conversations. Choose from five built-in sprites or search thousands of community pets from Petdex, then customize Sato's behavior with context profiles.
 
 ## Features
 
-- **Screenshot + question workflow** -- select a screen region, ask anything about it, get a streaming response from Claude
+- **Screenshot + question workflow** -- select a screen region, ask anything about it, and stream a response from your selected AI provider
 - **Chat sidebar** -- follow-up conversations with full context from the original screenshot
 - **Sato Local voice input** -- dictate questions on-device with WhisperKit using Fast or Accurate transcription; recordings are never uploaded
-- **Customizable sprite** -- pick your companion: Max (Samoyed), Sky (cat), Lexi, Rover, or Paris
+- **Customizable sprite** -- choose Max, Sky, Lexi, Rover, or Paris, or search and filter the Petdex community catalog; selected Petdex sprites are cached for offline use
 - **Context profiles** -- create named profiles with plain-English instructions to customize Sato's behavior per task
 - **Stealth mode** -- hide the sprite but keep the AI assistant accessible via hotkey
-- **Direct API** -- your Anthropic API key, stored in Keychain. No proxy, no middleman
+- **Auto Sleep** -- dozes in a low-power stationary animation after a minute without using Sato, fully suspends after 15 minutes of Mac inactivity, and wakes instantly when you return
+- **Choose your AI** -- Anthropic, OpenAI, Ollama Local, and Ollama Cloud share one direct provider interface; remote API keys stay in Keychain
 
 ## Download
 
@@ -25,7 +26,7 @@ Download the latest release from the [GitHub Releases page](https://github.com/v
 ## Requirements
 
 - macOS 14.2+
-- An [Anthropic API key](https://console.anthropic.com/)
+- An Anthropic, OpenAI, or Ollama Cloud API key, or a local Ollama installation
 - An internet connection for the one-time speech model download; voice input works offline afterward
 
 ## Install
@@ -34,7 +35,7 @@ Download the latest release from the [GitHub Releases page](https://github.com/v
 2. Drag Sato to your Applications folder
 3. Launch Sato -- it appears in your menu bar (not the dock)
 4. Grant the permissions it requests (Accessibility, Screen Recording, Screen Content). Microphone access is optional and requested only when you use Sato Local.
-5. Open the menu bar panel and paste your Anthropic API key
+5. Open the menu bar panel and configure your preferred AI provider
 6. Press **Ctrl + Option** to start your first interaction
 
 ## Build from source
@@ -53,7 +54,7 @@ See [AGENTS.md](AGENTS.md) for the full architecture documentation.
 
 ## Credits
 
-Sato is a fork of [Clicky](https://github.com/farzaa/clicky) by [Farza Majeed](https://x.com/farzatv). The original project laid the foundation for the menu bar app, overlay system, and AI pipeline. Sato builds on that with direct API integration, context profiles, multiple sprites, a chat sidebar, and stealth mode.
+Sato is a fork of [Clicky](https://github.com/farzaa/clicky) by [Farza Majeed](https://x.com/farzatv). The original project laid the foundation for the menu bar app, overlay system, and AI pipeline. Sato builds on that with direct multi-provider AI integration, context profiles, multiple sprites, a chat sidebar, and stealth mode. Community sprite discovery is powered by [Petdex](https://petdex.dev); each pet remains credited to its creator in the picker.
 
 ## License
 

@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import leanring_buddy
 
+@MainActor
 struct LocalSpeechPreparationPresentationTests {
     @Test func preparationStagesHaveStableVisibleOrder() {
         #expect(LocalSpeechModelPreparationStage.verifyingModel.rawValue == 1)

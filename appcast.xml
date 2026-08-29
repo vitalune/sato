@@ -6,6 +6,18 @@
         <description>Most recent updates to Sato</description>
         <language>en</language>
         <item>
+            <title>1.2.8</title>
+            <pubDate>Thu, 13 Aug 2026 12:28:34 -0700</pubDate>
+            <sparkle:version>10208</sparkle:version>
+            <sparkle:shortVersionString>1.2.8</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <enclosure
+                url="https://github.com/vitalune/sato/releases/download/v1.2.8/Sato-1.2.8.dmg"
+                length="65573242"
+                type="application/octet-stream"
+                sparkle:edSignature="A6HwApecQtbKseAWInZKxlc6ZNaK+6Uk/DrLosfiJvlzP1KRby518hRDRb5YCS2DCZiHXi5ZNOZZ0R1K02ayDQ==" />
+        </item>
+        <item>
             <title>Version 1.1.1</title>
             <pubDate>Sat, 25 Apr 2026 13:58:05 -0400</pubDate>
             <sparkle:version>10101</sparkle:version>

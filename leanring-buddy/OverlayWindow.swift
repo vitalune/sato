@@ -130,6 +130,8 @@ struct BlueCursorView: View {
     @State private var bubbleSize: CGSize = .zero
     @State private var bubbleOpacity: Double = 1.0
     @State private var cursorOpacity: Double = 0.0
+    @State private var welcomeAnimationTask: Task<Void, Never>?
+    @State private var assistSelectionStartTask: Task<Void, Never>?
 
     // MARK: - Buddy Navigation State
 
@@ -140,6 +142,8 @@ struct BlueCursorView: View {
     @State private var navigationBubbleText: String = ""
     @State private var navigationBubbleOpacity: Double = 0.0
     @State private var navigationBubbleSize: CGSize = .zero
+    @State private var navigationBubblePhrase: String = ""
+    @State private var navigationBubbleTask: Task<Void, Never>?
 
     /// Scale factor for the navigation speech bubble's pop-in entrance.
     /// Starts at 0.5 and springs to 1.0 when the first character appears.
@@ -302,31 +306,20 @@ struct BlueCursorView: View {
         .frame(width: screenFrame.width, height: screenFrame.height)
         .ignoresSafeArea()
         .onAppear {
-            // Set initial cursor position immediately before starting animation
-            let mouseLocation = NSEvent.mouseLocation
-            isCursorOnThisScreen = screenFrame.contains(mouseLocation)
-
-            let swiftUIPosition = convertScreenPointToSwiftUICoordinates(mouseLocation)
-            self.cursorPosition = CGPoint(x: swiftUIPosition.x + 35, y: swiftUIPosition.y + 25)
-
-            startTrackingCursor()
+            updateCursorState()
+            updateCursorTrackingState()
 
             // Only show welcome message on first appearance (app start)
             // and only if the cursor starts on this screen
             if isFirstAppearance && isCursorOnThisScreen {
-                withAnimation(.easeIn(duration: 2.0)) {
-                    self.cursorOpacity = 1.0
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                    self.bubbleOpacity = 0.0
-                    startWelcomeAnimation()
-                }
+                scheduleWelcomeAnimation()
             } else {
                 self.cursorOpacity = 1.0
             }
         }
         .onDisappear {
-            timer?.invalidate()
+            stopLocalAnimationChainsForLifecyclePause()
+            stopTrackingCursor()
             companionManager.tearDownOnboardingVideo()
         }
         .onChange(of: companionManager.detectedElementScreenLocation) { newLocation in
@@ -348,7 +341,8 @@ struct BlueCursorView: View {
         .onChange(of: spriteAnimationManager.spriteState) { newState in
             // When the sprite arrives at an element (bark animation starts),
             // begin the speech bubble pointing animation.
-            if newState == .pointingAtElement {
+            if newState == .pointingAtElement,
+               spriteIsVisibleOnThisScreen {
                 startPointingBubble()
             }
             // When the sprite returns to resting, clean up navigation state.
@@ -357,17 +351,42 @@ struct BlueCursorView: View {
             }
             // When the sprite arrives at cursor during an assist flow,
             // trigger the screenshot capture after the bark plays.
-            if newState == .assistingAtCursor && companionManager.assistFlowPhase == .inactive {
-                // Brief delay so the bark animation plays before the selection overlay appears
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                    guard self.companionManager.assistFlowPhase == .inactive,
-                          self.spriteAnimationManager.spriteState == .assistingAtCursor else { return }
-                    self.companionManager.startScreenshotSelectionAfterBark()
-                }
+            if newState == .assistingAtCursor,
+               companionManager.assistFlowPhase == .inactive,
+               spriteIsVisibleOnThisScreen {
+                scheduleScreenshotSelectionAfterBark()
             }
         }
         .onChange(of: companionManager.assistFlowPhase) { newPhase in
+            updateCursorState()
             handleAssistFlowPhaseChange(newPhase)
+            updateCursorTrackingState()
+        }
+        .onChange(of: companionManager.isSleeping) { _, _ in
+            updateCursorTrackingState()
+        }
+        .onChange(of: companionManager.isDozing) { _, _ in
+            updateCursorTrackingState()
+        }
+        .onChange(of: companionManager.isVisualRuntimePaused) { _, isPaused in
+            if isPaused {
+                stopLocalAnimationChainsForLifecyclePause()
+            } else {
+                resumeLocalAnimationChainsAfterLifecyclePause()
+            }
+            updateCursorTrackingState()
+        }
+        .onChange(of: companionManager.isStealthModeEnabled) { _, _ in
+            updateCursorTrackingState()
+        }
+        .onChange(of: companionManager.showOnboardingPrompt) { _, _ in
+            updateCursorTrackingState()
+        }
+        .onChange(of: showWelcome) { _, _ in
+            updateCursorTrackingState()
+        }
+        .onChange(of: welcomeText) { _, _ in
+            updateCursorTrackingState()
         }
     }
 
@@ -415,16 +434,72 @@ struct BlueCursorView: View {
 
     // MARK: - Cursor Tracking
 
-    private func startTrackingCursor() {
-        timer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { _ in
-            let mouseLocation = NSEvent.mouseLocation
-            self.isCursorOnThisScreen = self.screenFrame.contains(mouseLocation)
+    private var shouldTrackCursorContinuously: Bool {
+        guard !companionManager.isSleeping,
+              !companionManager.isDozing,
+              !companionManager.isVisualRuntimePaused else {
+            return false
+        }
 
-            // Update cursorPosition for overlay elements that track the mouse.
-            let swiftUIPosition = self.convertScreenPointToSwiftUICoordinates(mouseLocation)
-            let buddyX = swiftUIPosition.x + 35
-            let buddyY = swiftUIPosition.y + 25
-            self.cursorPosition = CGPoint(x: buddyX, y: buddyY)
+        // Normal resting and non-stealth assist UI use the sprite's published
+        // position, not cursorPosition. The stealth composer snapshots the cursor
+        // when its phase begins; only its response stays attached to a moving cursor.
+        if isFirstAppearance && showWelcome && !welcomeText.isEmpty {
+            return true
+        }
+        if companionManager.showOnboardingPrompt {
+            return true
+        }
+        guard companionManager.isStealthModeEnabled else {
+            return false
+        }
+
+        switch companionManager.assistFlowPhase {
+        case .showingResponse:
+            return isThisScreenTheAssistScreen
+        case .inactive, .selectingScreenshot, .typingQuestion, .chatSidebar:
+            return false
+        }
+    }
+
+    private func updateCursorTrackingState() {
+        if shouldTrackCursorContinuously {
+            startTrackingCursor()
+        } else {
+            stopTrackingCursor()
+        }
+    }
+
+    private func startTrackingCursor() {
+        guard timer == nil, shouldTrackCursorContinuously else { return }
+
+        updateCursorState()
+        let cursorTrackingTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { _ in
+            self.updateCursorState()
+        }
+        cursorTrackingTimer.tolerance = 0.004
+        timer = cursorTrackingTimer
+    }
+
+    private func stopTrackingCursor() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    private func updateCursorState() {
+        let mouseLocation = NSEvent.mouseLocation
+        let cursorIsOnThisScreen = screenFrame.contains(mouseLocation)
+        if isCursorOnThisScreen != cursorIsOnThisScreen {
+            isCursorOnThisScreen = cursorIsOnThisScreen
+        }
+
+        let swiftUIPosition = convertScreenPointToSwiftUICoordinates(mouseLocation)
+        let updatedCursorPosition = CGPoint(
+            x: swiftUIPosition.x + 35,
+            y: swiftUIPosition.y + 25
+        )
+        if cursorPosition != updatedCursorPosition {
+            cursorPosition = updatedCursorPosition
         }
     }
 
@@ -472,57 +547,77 @@ struct BlueCursorView: View {
 
         // Use custom bubble text from the companion manager (e.g. onboarding demo)
         // if available, otherwise fall back to a random pointer phrase
-        let pointerPhrase = companionManager.detectedElementBubbleText
+        navigationBubblePhrase = companionManager.detectedElementBubbleText
             ?? navigationPointerPhrases.randomElement()
             ?? "right here!"
-
-        streamNavigationBubbleCharacter(phrase: pointerPhrase, characterIndex: 0) {
-            // All characters streamed — hold for 3 seconds, then fly back
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                guard self.buddyNavigationMode == .pointingAtTarget else { return }
-                self.navigationBubbleOpacity = 0.0
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    guard self.buddyNavigationMode == .pointingAtTarget else { return }
-                    self.startFlyingBackToResting()
-                }
-            }
-        }
+        scheduleNavigationBubbleAnimation()
     }
 
-    /// Streams the navigation bubble text one character at a time with variable
-    /// delays (30–60ms) for a natural "speaking" rhythm.
-    private func streamNavigationBubbleCharacter(
-        phrase: String,
-        characterIndex: Int,
-        onComplete: @escaping () -> Void
-    ) {
-        guard buddyNavigationMode == .pointingAtTarget else { return }
-        guard characterIndex < phrase.count else {
-            onComplete()
+    /// Streams, holds, and dismisses the pointing bubble in one cancellable
+    /// chain so screen/session pause can stop all overlay-local wakeups.
+    private func scheduleNavigationBubbleAnimation() {
+        navigationBubbleTask?.cancel()
+        guard buddyNavigationMode == .pointingAtTarget,
+              !companionManager.isVisualRuntimePaused else {
             return
         }
 
-        let charIndex = phrase.index(phrase.startIndex, offsetBy: characterIndex)
-        navigationBubbleText.append(phrase[charIndex])
+        navigationBubbleTask = Task { @MainActor in
+            while navigationBubbleText.count < navigationBubblePhrase.count {
+                guard buddyNavigationMode == .pointingAtTarget,
+                      !companionManager.isVisualRuntimePaused else {
+                    return
+                }
 
-        // On the first character, trigger the scale-bounce entrance
-        if characterIndex == 0 {
-            navigationBubbleScale = 1.0
-        }
+                let nextCharacterIndex = navigationBubblePhrase.index(
+                    navigationBubblePhrase.startIndex,
+                    offsetBy: navigationBubbleText.count
+                )
+                navigationBubbleText.append(navigationBubblePhrase[nextCharacterIndex])
+                if navigationBubbleText.count == 1 {
+                    navigationBubbleScale = 1.0
+                }
 
-        let characterDelay = Double.random(in: 0.03...0.06)
-        DispatchQueue.main.asyncAfter(deadline: .now() + characterDelay) {
-            self.streamNavigationBubbleCharacter(
-                phrase: phrase,
-                characterIndex: characterIndex + 1,
-                onComplete: onComplete
-            )
+                do {
+                    let characterDelay = Double.random(in: 0.03...0.06)
+                    try await Task.sleep(
+                        nanoseconds: UInt64(characterDelay * 1_000_000_000)
+                    )
+                } catch {
+                    return
+                }
+            }
+
+            do {
+                try await Task.sleep(nanoseconds: 3_000_000_000)
+            } catch {
+                return
+            }
+            guard buddyNavigationMode == .pointingAtTarget,
+                  !companionManager.isVisualRuntimePaused else {
+                return
+            }
+            navigationBubbleOpacity = 0.0
+
+            do {
+                try await Task.sleep(nanoseconds: 500_000_000)
+            } catch {
+                return
+            }
+            guard buddyNavigationMode == .pointingAtTarget,
+                  !companionManager.isVisualRuntimePaused else {
+                return
+            }
+            navigationBubbleTask = nil
+            startFlyingBackToResting()
         }
     }
 
     /// Flies the sprite back to its resting position at the bottom of the
     /// screen after the pointing bubble is dismissed.
     private func startFlyingBackToResting() {
+        navigationBubbleTask?.cancel()
+        navigationBubbleTask = nil
         buddyNavigationMode = .navigatingToTarget
 
         spriteAnimationManager.transitionTo(
@@ -536,8 +631,11 @@ struct BlueCursorView: View {
     /// Called from the onChange(of: spriteState) observer when the sprite
     /// transitions back to .resting.
     private func finishNavigationAndResumeFollowing() {
+        navigationBubbleTask?.cancel()
+        navigationBubbleTask = nil
         buddyNavigationMode = .followingCursor
         navigationBubbleText = ""
+        navigationBubblePhrase = ""
         navigationBubbleOpacity = 0.0
         navigationBubbleScale = 1.0
         companionManager.clearDetectedElementLocation()
@@ -602,6 +700,7 @@ struct BlueCursorView: View {
                 Color.black.opacity(0.001) // Fill to capture outside clicks for dismissal
 
                 TextInputView(
+                    companionManager: companionManager,
                     speechTranscriptionManager: companionManager.localSpeechTranscriptionManager,
                     speechContextPrompt: companionManager.localSpeechTranscriptionContextPrompt,
                     onSubmit: { [weak companionManager] questionText in
@@ -637,14 +736,6 @@ struct BlueCursorView: View {
                     companionManager?.dismissAssistResponseAndReturn()
                 }
             )
-            // Speech bubble is rendered in the main overlay's BlueCursorView body
-            // Auto-dismiss after 15 seconds if not manually dismissed
-            DispatchQueue.main.asyncAfter(deadline: .now() + 15.0) { [weak companionManager] in
-                guard let companionManager,
-                      companionManager.assistFlowPhase == .showingResponse,
-                      !companionManager.assistResponseIsStreaming else { return }
-                companionManager.dismissAssistResponseAndReturn()
-            }
 
         case .chatSidebar:
             companionManager.overlayWindowManager.removeSpeechBubbleKeyMonitor()
@@ -660,30 +751,108 @@ struct BlueCursorView: View {
 
     // MARK: - Welcome Animation
 
-    private func startWelcomeAnimation() {
-        withAnimation(.easeIn(duration: 0.4)) {
-            self.bubbleOpacity = 1.0
+    private func scheduleWelcomeAnimation() {
+        welcomeAnimationTask?.cancel()
+        guard isFirstAppearance,
+              isCursorOnThisScreen,
+              showWelcome,
+              !companionManager.isVisualRuntimePaused else {
+            return
         }
 
-        var currentIndex = 0
-        Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { timer in
-            guard currentIndex < self.fullWelcomeMessage.count else {
-                timer.invalidate()
-                // Hold the text for 2 seconds, then fade it out
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                    self.bubbleOpacity = 0.0
+        welcomeAnimationTask = Task { @MainActor in
+            if welcomeText.isEmpty && bubbleOpacity > 0.5 {
+                withAnimation(.easeIn(duration: 2.0)) {
+                    cursorOpacity = 1.0
                 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                    self.showWelcome = false
-                    // Start the onboarding video right after the welcome text disappears
-                    self.companionManager.setupOnboardingVideo()
+                do {
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                } catch {
+                    return
                 }
-                return
+                guard !companionManager.isVisualRuntimePaused else { return }
+                bubbleOpacity = 0.0
             }
 
-            let index = self.fullWelcomeMessage.index(self.fullWelcomeMessage.startIndex, offsetBy: currentIndex)
-            self.welcomeText.append(self.fullWelcomeMessage[index])
-            currentIndex += 1
+            withAnimation(.easeIn(duration: 0.4)) {
+                bubbleOpacity = 1.0
+            }
+            while welcomeText.count < fullWelcomeMessage.count {
+                guard !companionManager.isVisualRuntimePaused else { return }
+                let nextCharacterIndex = fullWelcomeMessage.index(
+                    fullWelcomeMessage.startIndex,
+                    offsetBy: welcomeText.count
+                )
+                welcomeText.append(fullWelcomeMessage[nextCharacterIndex])
+                do {
+                    try await Task.sleep(nanoseconds: 30_000_000)
+                } catch {
+                    return
+                }
+            }
+
+            do {
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+            } catch {
+                return
+            }
+            guard !companionManager.isVisualRuntimePaused else { return }
+            bubbleOpacity = 0.0
+
+            do {
+                try await Task.sleep(nanoseconds: 500_000_000)
+            } catch {
+                return
+            }
+            guard !companionManager.isVisualRuntimePaused else { return }
+            showWelcome = false
+            welcomeAnimationTask = nil
+            companionManager.setupOnboardingVideo()
+        }
+    }
+
+    private func scheduleScreenshotSelectionAfterBark() {
+        assistSelectionStartTask?.cancel()
+        guard !companionManager.isVisualRuntimePaused else { return }
+
+        assistSelectionStartTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 800_000_000)
+            } catch {
+                return
+            }
+            guard companionManager.assistFlowPhase == .inactive,
+                  spriteAnimationManager.spriteState == .assistingAtCursor,
+                  !companionManager.isVisualRuntimePaused else {
+                return
+            }
+            assistSelectionStartTask = nil
+            companionManager.startScreenshotSelectionAfterBark()
+        }
+    }
+
+    private func stopLocalAnimationChainsForLifecyclePause() {
+        welcomeAnimationTask?.cancel()
+        welcomeAnimationTask = nil
+        navigationBubbleTask?.cancel()
+        navigationBubbleTask = nil
+        assistSelectionStartTask?.cancel()
+        assistSelectionStartTask = nil
+    }
+
+    private func resumeLocalAnimationChainsAfterLifecyclePause() {
+        if isFirstAppearance,
+           isCursorOnThisScreen,
+           showWelcome {
+            scheduleWelcomeAnimation()
+        }
+        if buddyNavigationMode == .pointingAtTarget {
+            scheduleNavigationBubbleAnimation()
+        }
+        if spriteAnimationManager.spriteState == .assistingAtCursor,
+           companionManager.assistFlowPhase == .inactive,
+           spriteIsVisibleOnThisScreen {
+            scheduleScreenshotSelectionAfterBark()
         }
     }
 }
@@ -897,10 +1066,25 @@ private final class ChatPanelWindow: NSPanel {
 // buddy seamlessly follows the cursor across multiple monitors.
 @MainActor
 class OverlayWindowManager: NSObject, NSWindowDelegate {
+    private struct PausedVisualRuntimeWindowState {
+        /// AppKit reports ordered windows front-to-back. Keeping that ordering lets
+        /// resume restore the same window instances without rebuilding any views.
+        var visibleWindowsFrontToBack: [NSWindow]
+        var keyWindow: NSWindow?
+        let applicationWasActive: Bool
+        var shouldActivateApplicationOnResume: Bool
+    }
+
+    private struct SpeechBubbleKeyActions {
+        let onTab: () -> Void
+        let onEscape: () -> Void
+    }
+
     private var overlayWindows: [OverlayWindow] = []
     private var interactiveOverlayWindow: InteractiveOverlayWindow?
     private var chatSidebarWindow: ChatPanelWindow?
     private var chatWindowViewState: ChatWindowViewState?
+    private var pausedVisualRuntimeWindowState: PausedVisualRuntimeWindowState?
     /// Dedicated floating window for the onboarding video with playback controls.
     private var onboardingVideoWindow: NSPanel?
     /// Local key event monitor installed while the interactive overlay is visible.
@@ -908,6 +1092,7 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
     /// screenshot selection and text input views — NSHostingView can otherwise
     /// consume key events before they reach the window's keyDown override.
     private var interactiveKeyEventMonitor: Any?
+    private var shouldInstallInteractiveKeyEventMonitor = false
     /// Global key event monitor for Tab/Escape while the speech bubble is visible.
     /// Uses a global monitor so it works even when the app isn't active (menu bar
     /// apps typically aren't). Tab opens the chat sidebar; Escape dismisses.
@@ -915,6 +1100,7 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
     /// Local fallback for the speech bubble key monitor — fires when the app
     /// happens to be active (e.g. user just interacted with the menu bar panel).
     private var speechBubbleLocalKeyMonitor: Any?
+    private var speechBubbleKeyActions: SpeechBubbleKeyActions?
     var hasShownOverlayBefore = false
 
     func showOverlay(onScreens screens: [NSScreen], companionManager: CompanionManager) {
@@ -945,6 +1131,125 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
         }
     }
 
+    /// Temporarily removes the currently visible runtime windows from the WindowServer
+    /// without releasing their hosting views or changing assist/chat presentation state.
+    /// Repeated pause calls are intentionally ignored so the first visibility snapshot wins.
+    func pauseVisualRuntimeWindows() {
+        guard pausedVisualRuntimeWindowState == nil else { return }
+
+        let managedWindows = managedVisualRuntimeWindows
+        let managedWindowIdentifiers = Set(managedWindows.map { ObjectIdentifier($0) })
+        let orderedVisibleWindows = NSApp.orderedWindows.filter { window in
+            window.isVisible && managedWindowIdentifiers.contains(ObjectIdentifier(window))
+        }
+        let orderedVisibleWindowIdentifiers = Set(
+            orderedVisibleWindows.map { ObjectIdentifier($0) }
+        )
+        let visibleWindowsMissingFromAppOrdering = managedWindows.filter { window in
+            window.isVisible
+                && !orderedVisibleWindowIdentifiers.contains(ObjectIdentifier(window))
+        }
+        let visibleWindowsFrontToBack = orderedVisibleWindows
+            + visibleWindowsMissingFromAppOrdering
+        let keyWindow = visibleWindowsFrontToBack.first { window in
+            window === NSApp.keyWindow
+        }
+
+        pausedVisualRuntimeWindowState = PausedVisualRuntimeWindowState(
+            visibleWindowsFrontToBack: visibleWindowsFrontToBack,
+            keyWindow: keyWindow,
+            applicationWasActive: NSApp.isActive,
+            shouldActivateApplicationOnResume: false
+        )
+
+        removeInstalledInteractiveKeyEventMonitor()
+        removeInstalledSpeechBubbleKeyMonitors()
+
+        for window in visibleWindowsFrontToBack {
+            window.orderOut(nil)
+        }
+    }
+
+    /// Restores only the exact window instances that were visible when pause began.
+    /// Windows destroyed through the normal hide APIs while paused are not resurrected.
+    func resumeVisualRuntimeWindows() {
+        guard let pausedVisualRuntimeWindowState else { return }
+        self.pausedVisualRuntimeWindowState = nil
+
+        let windowsStillManaged = pausedVisualRuntimeWindowState
+            .visibleWindowsFrontToBack
+            .filter { isManagedVisualRuntimeWindow($0) }
+
+        // Recreate the previous front-to-back order by bringing the backmost window
+        // forward first. orderFrontRegardless does not allocate or duplicate windows.
+        for window in windowsStillManaged.reversed() {
+            window.orderFrontRegardless()
+        }
+
+        if let keyWindow = pausedVisualRuntimeWindowState.keyWindow,
+           windowsStillManaged.contains(where: { $0 === keyWindow }) {
+            if pausedVisualRuntimeWindowState.applicationWasActive
+                || pausedVisualRuntimeWindowState.shouldActivateApplicationOnResume {
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            keyWindow.makeKey()
+        }
+
+        installInteractiveKeyEventMonitorIfNeeded()
+        installSpeechBubbleKeyMonitorsIfNeeded()
+    }
+
+    /// A flow may finish asynchronously after the screen or session has paused.
+    /// Keep any newly-created window hidden, then fold it into the original resume
+    /// snapshot so it appears only after the final lifecycle reason is removed.
+    private func deferWindowPresentationUntilResume(
+        _ window: NSWindow,
+        shouldBecomeKey: Bool
+    ) -> Bool {
+        guard var pausedVisualRuntimeWindowState else { return false }
+
+        pausedVisualRuntimeWindowState.visibleWindowsFrontToBack.removeAll {
+            $0 === window
+        }
+        pausedVisualRuntimeWindowState.visibleWindowsFrontToBack.insert(window, at: 0)
+        if shouldBecomeKey {
+            pausedVisualRuntimeWindowState.keyWindow = window
+            pausedVisualRuntimeWindowState.shouldActivateApplicationOnResume = true
+        }
+        self.pausedVisualRuntimeWindowState = pausedVisualRuntimeWindowState
+        return true
+    }
+
+    private var managedVisualRuntimeWindows: [NSWindow] {
+        var managedWindows = overlayWindows.map { $0 as NSWindow }
+        if let interactiveOverlayWindow {
+            managedWindows.append(interactiveOverlayWindow)
+        }
+        if let chatSidebarWindow {
+            managedWindows.append(chatSidebarWindow)
+        }
+        if let onboardingVideoWindow {
+            managedWindows.append(onboardingVideoWindow)
+        }
+        return managedWindows
+    }
+
+    private func isManagedVisualRuntimeWindow(_ window: NSWindow) -> Bool {
+        if overlayWindows.contains(where: { $0 === window }) {
+            return true
+        }
+        if let interactiveOverlayWindow, interactiveOverlayWindow === window {
+            return true
+        }
+        if let chatSidebarWindow, chatSidebarWindow === window {
+            return true
+        }
+        if let onboardingVideoWindow, onboardingVideoWindow === window {
+            return true
+        }
+        return false
+    }
+
     /// Shows an interactive overlay for the assist flow (screenshot selection, text input, speech bubble).
     /// This overlay accepts mouse and keyboard events. Placed above the regular overlay.
     /// Shows an interactive overlay for the assist flow (screenshot selection, text input).
@@ -963,13 +1268,16 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
         hostingView.frame = screen.frame
         window.contentView = hostingView
         interactiveOverlayWindow = window
-        window.orderFrontRegardless()
 
-        // Activate the app so macOS grants keyboard focus to our window.
-        // Without this, makeKey() is silently ignored when the app is
-        // in the background (menu bar-only apps are often not "active").
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        if !deferWindowPresentationUntilResume(window, shouldBecomeKey: true) {
+            window.orderFrontRegardless()
+
+            // Activate the app so macOS grants keyboard focus to our window.
+            // Without this, makeKey() is silently ignored when the app is
+            // in the background (menu bar-only apps are often not "active").
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+        }
 
         if installKeyMonitor {
             installInteractiveKeyEventMonitor()
@@ -990,6 +1298,17 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
     /// can consume key events before they reach the window.
     private func installInteractiveKeyEventMonitor() {
         removeInteractiveKeyEventMonitor()
+        shouldInstallInteractiveKeyEventMonitor = true
+        installInteractiveKeyEventMonitorIfNeeded()
+    }
+
+    private func installInteractiveKeyEventMonitorIfNeeded() {
+        guard shouldInstallInteractiveKeyEventMonitor,
+              interactiveKeyEventMonitor == nil,
+              pausedVisualRuntimeWindowState == nil else {
+            return
+        }
+
         interactiveKeyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             switch event.keyCode {
             case 36: // Enter/Return
@@ -1005,6 +1324,11 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
     }
 
     private func removeInteractiveKeyEventMonitor() {
+        shouldInstallInteractiveKeyEventMonitor = false
+        removeInstalledInteractiveKeyEventMonitor()
+    }
+
+    private func removeInstalledInteractiveKeyEventMonitor() {
         if let monitor = interactiveKeyEventMonitor {
             NSEvent.removeMonitor(monitor)
             interactiveKeyEventMonitor = nil
@@ -1019,13 +1343,27 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
     /// keys when the app is active (and can consume them to prevent pass-through).
     func installSpeechBubbleKeyMonitor(onTab: @escaping () -> Void, onEscape: @escaping () -> Void) {
         removeSpeechBubbleKeyMonitor()
+        speechBubbleKeyActions = SpeechBubbleKeyActions(
+            onTab: onTab,
+            onEscape: onEscape
+        )
+        installSpeechBubbleKeyMonitorsIfNeeded()
+    }
+
+    private func installSpeechBubbleKeyMonitorsIfNeeded() {
+        guard let speechBubbleKeyActions,
+              speechBubbleGlobalKeyMonitor == nil,
+              speechBubbleLocalKeyMonitor == nil,
+              pausedVisualRuntimeWindowState == nil else {
+            return
+        }
 
         speechBubbleGlobalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
             switch event.keyCode {
             case 48: // Tab
-                onTab()
+                speechBubbleKeyActions.onTab()
             case 53: // Escape
-                onEscape()
+                speechBubbleKeyActions.onEscape()
             default:
                 break
             }
@@ -1034,10 +1372,10 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
         speechBubbleLocalKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             switch event.keyCode {
             case 48: // Tab
-                onTab()
+                speechBubbleKeyActions.onTab()
                 return nil // Consume the event
             case 53: // Escape
-                onEscape()
+                speechBubbleKeyActions.onEscape()
                 return nil
             default:
                 return event
@@ -1046,6 +1384,11 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
     }
 
     func removeSpeechBubbleKeyMonitor() {
+        speechBubbleKeyActions = nil
+        removeInstalledSpeechBubbleKeyMonitors()
+    }
+
+    private func removeInstalledSpeechBubbleKeyMonitors() {
         if let monitor = speechBubbleGlobalKeyMonitor {
             NSEvent.removeMonitor(monitor)
             speechBubbleGlobalKeyMonitor = nil
@@ -1111,12 +1454,17 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
         // Start invisible and fade in over 1 second
         panel.alphaValue = 0.0
         onboardingVideoWindow = panel
-        panel.orderFrontRegardless()
 
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 1.0
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            panel.animator().alphaValue = 1.0
+        if deferWindowPresentationUntilResume(panel, shouldBecomeKey: false) {
+            panel.alphaValue = 1.0
+        } else {
+            panel.orderFrontRegardless()
+
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 1.0
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                panel.animator().alphaValue = 1.0
+            }
         }
     }
 
@@ -1192,16 +1540,21 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
         window.setFrame(offScreenFrame, display: false)
         chatSidebarWindow = window
         chatWindowViewState = windowViewState
-        window.orderFrontRegardless()
 
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        if deferWindowPresentationUntilResume(window, shouldBecomeKey: true) {
+            window.setFrame(sidebarFrame, display: false)
+        } else {
+            window.orderFrontRegardless()
 
-        // Animate slide-in
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.22
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            window.animator().setFrame(sidebarFrame, display: true)
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+
+            // Animate slide-in
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.22
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                window.animator().setFrame(sidebarFrame, display: true)
+            }
         }
     }
 
@@ -1434,6 +1787,9 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
     }
 
     func hideOverlay() {
+        // A full teardown supersedes any non-destructive lifecycle snapshot.
+        // Keeping it would prevent the next lifecycle pause from taking a new snapshot.
+        pausedVisualRuntimeWindowState = nil
         removeSpeechBubbleKeyMonitor()
         hideInteractiveOverlay()
         hideChatSidebar()
@@ -1446,6 +1802,7 @@ class OverlayWindowManager: NSObject, NSWindowDelegate {
 
     /// Fades out overlay windows over `duration` seconds, then removes them.
     func fadeOutAndHideOverlay(duration: TimeInterval = 0.4) {
+        pausedVisualRuntimeWindowState = nil
         hideInteractiveOverlay()
         let windowsToFade = overlayWindows
         overlayWindows.removeAll()

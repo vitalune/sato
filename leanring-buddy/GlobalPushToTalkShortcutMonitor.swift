@@ -42,10 +42,9 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         // refreshAllPermissions → start() every few seconds.
         guard globalEventTap == nil else { return }
 
-        let monitoredEventTypes: [CGEventType] = [.flagsChanged, .keyDown, .keyUp]
-        let eventMask = monitoredEventTypes.reduce(CGEventMask(0)) { currentMask, eventType in
-            currentMask | (CGEventMask(1) << eventType.rawValue)
-        }
+        // Detection only needs modifier transitions. Avoid waking Sato for every
+        // ordinary key press while the global shortcut listener is installed.
+        let eventMask = CGEventMask(1) << CGEventType.flagsChanged.rawValue
 
         let eventTapCallback: CGEventTapCallBack = { _, eventType, event, userInfo in
             guard let userInfo else {

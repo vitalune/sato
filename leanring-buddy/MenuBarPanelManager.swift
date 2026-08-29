@@ -17,6 +17,7 @@ import SwiftUI
 extension Notification.Name {
     static let clickyDismissPanel = Notification.Name("clickyDismissPanel")
     static let clickyPanelContentSizeChanged = Notification.Name("clickyPanelContentSizeChanged")
+    static let clickyShowCustomSpritePicker = Notification.Name("clickyShowCustomSpritePicker")
     static let assistOverlayEnterPressed = Notification.Name("assistOverlayEnterPressed")
     static let assistOverlayCancelPressed = Notification.Name("assistOverlayCancelPressed")
 }
@@ -31,15 +32,21 @@ private class KeyablePanel: NSPanel {
 final class MenuBarPanelManager: NSObject {
     private var statusItem: NSStatusItem?
     private var panel: NSPanel?
+    private var customSpritePickerPanel: NSPanel?
     private var clickOutsideMonitor: Any?
     private var escapeKeyMonitor: Any?
+    private var customSpritePickerClickOutsideMonitor: Any?
+    private var customSpritePickerEscapeKeyMonitor: Any?
     private var dismissPanelObserver: NSObjectProtocol?
     private var panelContentSizeObserver: NSObjectProtocol?
+    private var showCustomSpritePickerObserver: NSObjectProtocol?
 
     private let companionManager: CompanionManager
     private let updaterController: UpdaterController
     private let panelWidth: CGFloat = 320
     private let panelHeight: CGFloat = 380
+    private let preferredCustomSpritePickerWidth: CGFloat = 560
+    private let preferredCustomSpritePickerHeight: CGFloat = 620
 
     /// Window level above the sprite overlay (.screenSaver = 1000) so the
     /// panel renders on top of it and is always visible when opened.
@@ -56,7 +63,10 @@ final class MenuBarPanelManager: NSObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.hidePanel()
+            Task { @MainActor [weak self] in
+                self?.hidePanel()
+                self?.hideCustomSpritePicker()
+            }
         }
 
         panelContentSizeObserver = NotificationCenter.default.addObserver(
@@ -64,7 +74,19 @@ final class MenuBarPanelManager: NSObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.positionPanelBelowStatusItem()
+            Task { @MainActor [weak self] in
+                self?.positionPanelBelowStatusItem()
+            }
+        }
+
+        showCustomSpritePickerObserver = NotificationCenter.default.addObserver(
+            forName: .clickyShowCustomSpritePicker,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.showCustomSpritePicker()
+            }
         }
     }
 
@@ -75,10 +97,19 @@ final class MenuBarPanelManager: NSObject {
         if let monitor = escapeKeyMonitor {
             NSEvent.removeMonitor(monitor)
         }
+        if let monitor = customSpritePickerClickOutsideMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+        if let monitor = customSpritePickerEscapeKeyMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
         if let observer = dismissPanelObserver {
             NotificationCenter.default.removeObserver(observer)
         }
         if let observer = panelContentSizeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = showCustomSpritePickerObserver {
             NotificationCenter.default.removeObserver(observer)
         }
     }
@@ -108,6 +139,14 @@ final class MenuBarPanelManager: NSObject {
     }
 
     @objc private func statusItemClicked() {
+        companionManager.prepareForMenuBarInteraction()
+        guard !companionManager.isVisualRuntimePaused else { return }
+
+        if let customSpritePickerPanel, customSpritePickerPanel.isVisible {
+            hideCustomSpritePicker()
+            return
+        }
+
         if let panel, panel.isVisible {
             hidePanel()
         } else {
@@ -118,6 +157,12 @@ final class MenuBarPanelManager: NSObject {
     // MARK: - Panel Lifecycle
 
     private func showPanel() {
+        guard !companionManager.isVisualRuntimePaused,
+              !companionManager.isSleeping else {
+            return
+        }
+        companionManager.setMenuBarPanelVisible(true)
+
         if panel == nil {
             createPanel()
         }
@@ -136,6 +181,9 @@ final class MenuBarPanelManager: NSObject {
     private func hidePanel() {
         panel?.orderOut(nil)
         removeClickOutsideMonitor()
+        if customSpritePickerPanel?.isVisible != true {
+            companionManager.setMenuBarPanelVisible(false)
+        }
     }
 
     private func createPanel() {
@@ -190,6 +238,181 @@ final class MenuBarPanelManager: NSObject {
             NSRect(x: panelOriginX, y: panelOriginY, width: panelWidth, height: actualPanelHeight),
             display: true
         )
+    }
+
+    // MARK: - Custom Sprite Picker
+
+    private func showCustomSpritePicker() {
+        guard !companionManager.isVisualRuntimePaused,
+              !companionManager.isSleeping else {
+            return
+        }
+        hidePanel()
+        companionManager.setMenuBarPanelVisible(
+            true,
+            showsPermissionControls: false
+        )
+        companionManager.petdexSpriteCatalog.prepareForPickerPresentation()
+
+        if customSpritePickerPanel == nil {
+            createCustomSpritePickerPanel(size: customSpritePickerSizeForCurrentScreen())
+        }
+        positionCustomSpritePickerBelowStatusItem()
+        customSpritePickerPanel?.orderFrontRegardless()
+        customSpritePickerPanel?.makeKey()
+        installCustomSpritePickerDismissalMonitors()
+    }
+
+    private func hideCustomSpritePicker() {
+        companionManager.cancelPendingPetdexSpriteSelection()
+        customSpritePickerPanel?.orderOut(nil)
+        customSpritePickerPanel?.contentView = nil
+        customSpritePickerPanel = nil
+        companionManager.petdexSpriteCatalog.cancelCatalogLoading()
+        removeCustomSpritePickerDismissalMonitors()
+        if panel?.isVisible != true {
+            companionManager.setMenuBarPanelVisible(false)
+        }
+    }
+
+    private func closeCustomSpritePickerAndReturnToMenu() {
+        hideCustomSpritePicker()
+        showPanel()
+    }
+
+    private func createCustomSpritePickerPanel(size: CGSize) {
+        let customSpritePickerView = CustomSpritePickerView(
+            companionManager: companionManager,
+            onClose: { [weak self] in
+                self?.closeCustomSpritePickerAndReturnToMenu()
+            },
+            onSelectionComplete: { [weak self] in
+                self?.hideCustomSpritePicker()
+            }
+        )
+        .frame(width: size.width, height: size.height)
+
+        let hostingView = NSHostingView(rootView: customSpritePickerView)
+        hostingView.frame = NSRect(
+            x: 0,
+            y: 0,
+            width: size.width,
+            height: size.height
+        )
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = .clear
+
+        let pickerPanel = KeyablePanel(
+            contentRect: hostingView.frame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        pickerPanel.isFloatingPanel = true
+        pickerPanel.level = panelWindowLevel
+        pickerPanel.isOpaque = false
+        pickerPanel.backgroundColor = .clear
+        pickerPanel.hasShadow = false
+        pickerPanel.hidesOnDeactivate = false
+        pickerPanel.isExcludedFromWindowsMenu = true
+        pickerPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        pickerPanel.isMovableByWindowBackground = false
+        pickerPanel.titleVisibility = .hidden
+        pickerPanel.titlebarAppearsTransparent = true
+        pickerPanel.contentView = hostingView
+        customSpritePickerPanel = pickerPanel
+    }
+
+    private func positionCustomSpritePickerBelowStatusItem() {
+        guard let customSpritePickerPanel,
+              let buttonWindow = statusItem?.button?.window else {
+            return
+        }
+
+        let statusItemFrame = buttonWindow.frame
+        let visibleScreenFrame = buttonWindow.screen?.visibleFrame
+            ?? NSScreen.main?.visibleFrame
+            ?? statusItemFrame
+        let edgePadding: CGFloat = 8
+        let panelWidth = customSpritePickerPanel.frame.width
+        let panelHeight = customSpritePickerPanel.frame.height
+        let unclampedOriginX = statusItemFrame.midX - (panelWidth / 2)
+        let minimumOriginX = visibleScreenFrame.minX + edgePadding
+        let maximumOriginX = visibleScreenFrame.maxX - panelWidth - edgePadding
+        let panelOriginX = min(max(unclampedOriginX, minimumOriginX), maximumOriginX)
+        let requestedOriginY = statusItemFrame.minY - panelHeight - 4
+        let panelOriginY = max(requestedOriginY, visibleScreenFrame.minY + edgePadding)
+
+        customSpritePickerPanel.setFrame(
+            NSRect(
+                x: panelOriginX,
+                y: panelOriginY,
+                width: panelWidth,
+                height: panelHeight
+            ),
+            display: true
+        )
+    }
+
+    private func customSpritePickerSizeForCurrentScreen() -> CGSize {
+        let visibleScreenFrame = statusItem?.button?.window?.screen?.visibleFrame
+            ?? NSScreen.main?.visibleFrame
+            ?? CGRect(
+                x: 0,
+                y: 0,
+                width: preferredCustomSpritePickerWidth,
+                height: preferredCustomSpritePickerHeight
+            )
+        let totalEdgePadding: CGFloat = 16
+        return CGSize(
+            width: min(
+                preferredCustomSpritePickerWidth,
+                max(1, visibleScreenFrame.width - totalEdgePadding)
+            ),
+            height: min(
+                preferredCustomSpritePickerHeight,
+                max(1, visibleScreenFrame.height - totalEdgePadding)
+            )
+        )
+    }
+
+    private func installCustomSpritePickerDismissalMonitors() {
+        removeCustomSpritePickerDismissalMonitors()
+
+        customSpritePickerClickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] _ in
+            guard let self,
+                  let customSpritePickerPanel = self.customSpritePickerPanel,
+                  customSpritePickerPanel.isVisible,
+                  !customSpritePickerPanel.frame.contains(NSEvent.mouseLocation) else {
+                return
+            }
+            self.hideCustomSpritePicker()
+        }
+
+        customSpritePickerEscapeKeyMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: .keyDown
+        ) { [weak self] event in
+            guard let customSpritePickerPanel = self?.customSpritePickerPanel,
+                  customSpritePickerPanel.isVisible,
+                  event.keyCode == 53 else {
+                return event
+            }
+            self?.closeCustomSpritePickerAndReturnToMenu()
+            return nil
+        }
+    }
+
+    private func removeCustomSpritePickerDismissalMonitors() {
+        if let customSpritePickerClickOutsideMonitor {
+            NSEvent.removeMonitor(customSpritePickerClickOutsideMonitor)
+            self.customSpritePickerClickOutsideMonitor = nil
+        }
+        if let customSpritePickerEscapeKeyMonitor {
+            NSEvent.removeMonitor(customSpritePickerEscapeKeyMonitor)
+            self.customSpritePickerEscapeKeyMonitor = nil
+        }
     }
 
     // MARK: - Click Outside Dismissal

@@ -98,7 +98,7 @@ struct MarkdownRendererTests {
 
     @Test
     func blocksKeepFencedCodeTogether() {
-        let blocks = MarkdownRenderer.blocks(
+        let blocks = MarkdownRenderer.blocks(for:
             """
             Before.
 
