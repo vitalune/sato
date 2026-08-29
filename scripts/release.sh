@@ -20,12 +20,12 @@ DMG_BACKGROUND="${PROJECT_DIR}/assets/dmg/background.png"
 
 if [ -z "$VERSION" ] || [ -z "$EXPORTED_APP_PATH" ]; then
     echo "Usage: $0 <version> <path-to-Xcode-exported-Sato.app>"
-    echo "Example: $0 1.2.0 ~/Desktop/Sato.app"
+    echo "Example: $0 1.3.0 ~/Desktop/Sato.app"
     exit 1
 fi
 
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "Version must use semantic versioning, for example 1.2.0"
+    echo "Version must use semantic versioning, for example 1.3.0"
     exit 1
 fi
 
@@ -148,6 +148,7 @@ DMG_PATH="${ARCHIVES_DIRECTORY}/Sato-${VERSION}.dmg"
 STAGED_APPCAST_PATH="${CANDIDATE_DIRECTORY}/appcast.xml"
 SPARKLE_SIGNATURE_PATH="${CANDIDATE_DIRECTORY}/sparkle-signature.txt"
 RELEASE_NOTES_PATH="${CANDIDATE_DIRECTORY}/release-notes.md"
+ARCHIVE_RELEASE_NOTES_PATH="${ARCHIVES_DIRECTORY}/Sato-${VERSION}.md"
 
 rm -rf "$CANDIDATE_DIRECTORY"
 mkdir -p "$STAGING_DIRECTORY" "$ARCHIVES_DIRECTORY"
@@ -216,6 +217,25 @@ if [ -f "${PROJECT_DIR}/appcast.xml" ]; then
     cp "${PROJECT_DIR}/appcast.xml" "$STAGED_APPCAST_PATH"
 fi
 
+cat > "$RELEASE_NOTES_PATH" <<EOF
+# Sato ${VERSION}
+
+## What's new
+
+- Browse, search, and filter community pets from Petdex, then choose one as
+  Sato's sprite.
+- Auto Sleep now dozes into Sato's stationary animation after one minute
+  without Sato activity, then fully sleeps after 15 minutes without Mac input.
+
+## Improvements
+
+- Reduced idle power use with adaptive sprite animation, event-driven cursor
+  tracking, and lifecycle-aware overlay suspension.
+- Improved wake and recovery behavior after screen sleep, session lock, and
+  permission changes without interrupting active work.
+EOF
+cp "$RELEASE_NOTES_PATH" "$ARCHIVE_RELEASE_NOTES_PATH"
+
 echo "Generating the staged Sparkle appcast..."
 "${SPARKLE_BIN}/generate_appcast" \
     --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/" \
@@ -228,16 +248,6 @@ if [[ "$stagedAppcastContents" != *"<sparkle:shortVersionString>${VERSION}</spar
     echo "The staged appcast does not contain version ${VERSION}"
     exit 1
 fi
-
-cat > "$RELEASE_NOTES_PATH" <<EOF
-# Sato ${VERSION}
-
-## What's new
-
-- Sidebar text now remains readable when macOS is using Light appearance.
-- Choose any custom sidebar text color from the new palette control. Pink is
-  ready as the default custom option, and the choice persists across launches.
-EOF
 
 DMG_SIZE=$(stat -f%z "$DMG_PATH")
 

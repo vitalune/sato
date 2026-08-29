@@ -6,18 +6,18 @@ anything.
 
 ## 1. Set the version
 
-For v1.2.0, these values must match in both the app target's Xcode build
+For v1.3.0, these values must match in both the app target's Xcode build
 settings and `leanring-buddy/Info.plist` before archiving:
 
 ```xml
 <key>CFBundleShortVersionString</key>
-<string>1.2.0</string>
+<string>1.3.0</string>
 <key>CFBundleVersion</key>
-<string>10200</string>
+<string>10300</string>
 ```
 
 The build number is derived as `major + two-digit minor + two-digit patch`.
-The repository is already configured for v1.2.0 (10200).
+The repository is already configured for v1.3.0 (10300).
 
 ## 2. Archive and export in Xcode
 
@@ -36,14 +36,14 @@ permissions in this project.
 brew install create-dmg
 
 # The default Keychain profile is "sato-notarization".
-./scripts/release.sh 1.2.0 ~/Desktop/Sato.app
+./scripts/release.sh 1.3.0 ~/Desktop/Sato.app
 
 # To use a different notary profile or Sparkle tool location:
 SATO_NOTARY_PROFILE=my-profile \
 SATO_DEVELOPER_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 SATO_DEVELOPER_IDENTITY_HASH=OPTIONAL_CERTIFICATE_SHA1 \
 SPARKLE_BIN=/path/to/Sparkle/bin \
-./scripts/release.sh 1.2.0 ~/Desktop/Sato.app
+./scripts/release.sh 1.3.0 ~/Desktop/Sato.app
 ```
 
 The script:
