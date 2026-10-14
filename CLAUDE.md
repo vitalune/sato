@@ -12,8 +12,8 @@ macOS menu bar companion app. Lives entirely in the macOS status bar (no dock ic
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: Multi-provider support via `AIProvider` protocol. Anthropic (Claude Sonnet 4.6 default; Opus 4.7 and Haiku 5.5 also offered), OpenAI (GPT-6 Luna and GPT-5.6 Terra via Responses API), Ollama Local (auto-detected models), and Ollama Cloud (qwen3-vl). A draggable effort slider under the model picker offers only the effort levels the selected model supports and remembers one level per model.
-- **Math Rendering**: LaTeX in responses is typeset natively with SwiftMath through `MathTypesetter`, with a readable Unicode fallback for formulas SwiftMath cannot lay out. User provides their own API key per provider, stored in Keychain. Provider selection and model managed by `ProviderManager`.
+- **AI Chat**: Multi-provider support via `AIProvider` protocol. Anthropic (Claude Sonnet 4.6 default; Opus 4.7 and Haiku 5.5 also offered), OpenAI (GPT-6 Luna and GPT-5.6 Terra via Responses API), Ollama Local (auto-detected models), and Ollama Cloud (qwen3-vl). User provides their own API key per provider, stored in Keychain. Provider selection and model managed by `ProviderManager`. A draggable effort slider under the model picker offers only the effort levels the selected model supports and remembers one level per model.
+- **Math Rendering**: LaTeX in responses is typeset natively with SwiftMath through `MathTypesetter`, with a readable Unicode fallback for formulas SwiftMath cannot lay out.
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
@@ -66,7 +66,7 @@ macOS menu bar companion app. Lives entirely in the macOS status bar (no dock ic
 | `AIProviders/AnthropicProvider.swift` | ~240 | Anthropic Claude API implementation. SSE streaming, vision support, adaptive thinking with `output_config.effort`, models: Opus 4.7, Sonnet 4.6, Haiku 5.5 (saved Haiku 4.5 selections migrate). |
 | `AIProviders/OpenAIProvider.swift` | ~220 | OpenAI Responses API (`/v1/responses`) implementation. SSE streaming, vision via base64 data URLs, `reasoning.effort`, models: GPT-6 Luna and GPT-5.6 Terra. |
 | `AIProviders/ReasoningEffort.swift` | ~40 | Effort level and per-model effort option types shared by providers and the effort slider. |
-| `AIProviders/OllamaLocalProvider.swift` | ~175 | Local Ollama daemon (`localhost:11434`) implementation. NDJSON streaming, dynamic model discovery via `/api/tags`, vision detection via `/api/show`. |
+| `AIProviders/OllamaLocalProvider.swift` | ~250 | Local Ollama daemon (`localhost:11434`) implementation. NDJSON streaming, dynamic model discovery via `/api/tags`, vision and thinking detection via `/api/show`, and effort mapped to Ollama's `think` parameter. |
 | `AIProviders/OllamaCloudProvider.swift` | ~120 | Ollama Cloud (`ollama.com`) implementation. NDJSON streaming with Bearer auth. Single model for v1.1.0: `qwen3-vl-cloud`. |
 | `AIProviders/ProviderManager.swift` | ~280 | Centralized singleton managing active provider/model selection, per-model effort persistence, UserDefaults persistence, Ollama discovery, context profile override resolution, and the unified `streamChat()` helper. |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
