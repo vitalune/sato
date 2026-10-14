@@ -14,7 +14,8 @@ Remote-provider API keys are stored in the user's macOS Keychain. Sato calls the
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: Direct streaming integrations for Anthropic, OpenAI, Ollama Local, and Ollama Cloud through a shared provider abstraction
+- **AI Chat**: Direct streaming integrations for Anthropic (Opus 4.7, Sonnet 4.6, Haiku 5.5), OpenAI (GPT-6 Luna, GPT-5.6 Terra), Ollama Local, and Ollama Cloud through a shared provider abstraction, with a per-model reasoning effort slider under the model picker
+- **Math Rendering**: LaTeX in responses is typeset natively with SwiftMath (Latin Modern Math) through `MathTypesetter`, with a readable Unicode fallback for formulas SwiftMath cannot lay out
 - **Speech-to-Text**: Sato Local via WhisperKit. Users choose Fast (Whisper large-v3-turbo) or Accurate (Whisper large-v3); converted Core ML models download on demand and remain under `~/Library/Application Support/Sato/SpeechModels/`
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Voice Input**: Click-to-record microphone controls in the initial screenshot composer and follow-up chat composer, with Cmd+Shift+M as the composer-scoped start/stop shortcut. Audio remains in memory, is transcribed locally, is never uploaded, and is inserted as editable text rather than sent automatically.
@@ -24,7 +25,7 @@ Remote-provider API keys are stored in the user's macOS Keychain. Sato calls the
 
 ### AI Providers
 
-`ProviderManager` selects a common `AIProvider` implementation for Anthropic, OpenAI, Ollama Local, or Ollama Cloud. Remote-provider credentials remain in the macOS Keychain and are attached only to direct requests to that provider. Ollama Local discovers models through the user's local daemon. Petdex browsing and user-selected sprite downloads call Petdex's public, credential-free API and asset host directly.
+`ProviderManager` selects a common `AIProvider` implementation for Anthropic, OpenAI, Ollama Local, or Ollama Cloud. Each model declares the effort levels its API accepts (`ReasoningEffortOptions`); the panel's draggable effort slider stores one level per model, and requests send it as Anthropic `output_config.effort` with adaptive thinking, OpenAI `reasoning.effort`, or Ollama `think`. Removed models (Haiku 4.5, GPT-5.6 Luna) migrate to their replacements. Remote-provider credentials remain in the macOS Keychain and are attached only to direct requests to that provider. Ollama Local discovers models through the user's local daemon. Petdex browsing and user-selected sprite downloads call Petdex's public, credential-free API and asset host directly.
 
 ### Key Architecture Decisions
 
@@ -42,7 +43,9 @@ Remote-provider API keys are stored in the user's macOS Keychain. Sato calls the
 
 **Transient Cursor Mode**: When stealth mode is on, pressing the hotkey fades in the cursor overlay for the duration of the screenshot question and response flow, then fades it out automatically after 1 second of inactivity.
 
-**Context Profiles**: Users create named context profiles via the config panel that customize Sato's behavior. Each profile contains plain-English instructions injected into the Claude system prompt. Profiles are stored as JSON in `~/Library/Application Support/Sato/profiles.json` and persist across app restarts. Only one profile can be active at a time. Managed by `ContextManager.swift`.
+**LaTeX Math Rendering**: `MarkdownRenderer` finds display math (`$$...$$`, `\[...\]`, bare `\begin{aligned}`-style environments, and bracket-wrapped formulas) and inline math (`$...$`, `\(...\)`). Like a KaTeX pipeline, it first moves glued `$$` fences onto their own lines, never treats fenced or inline code as math, follows Pandoc's dollar rules so prices stay text, and leaves unbalanced `$$` visible instead of swallowing the response. `MathTypesetter` rewrites KaTeX-only commands into SwiftMath-compatible LaTeX, restores TeX spacing SwiftMath omits, and rasterizes each formula into a cached template image. `MarkdownResponseView` places inline formulas on the text baseline inside `Text`, moves formulas too wide for a line onto their own row, and centers display math with horizontal scrolling.
+
+**Context Profiles**: Users create named context profiles via the config panel that customize Sato's behavior. Each profile contains plain-English instructions injected into the Claude system prompt. Profiles are stored as JSON in `~/Library/Application Support/Sato/profiles.json` and persist across app restarts. Only one profile can be active at a time. The panel shows profiles as a single compact menu row for switching, creating, editing, and deleting. Managed by `ContextManager.swift`.
 
 **Conversation History**: Each initial screenshot question creates a separate persisted thread. `ConversationStore` keeps JSON message metadata and separate JPEG screenshot files under `~/Library/Application Support/Sato/`, retaining the five most recent unpinned conversations plus all pinned conversations. While a conversation is open in the sidebar, Ctrl+Option captures another screenshot for the next follow-up turn (shown in chat and sent with that reply). The chat window can detach into a movable, resizable compact panel and dock to either display edge.
 
@@ -53,7 +56,7 @@ Remote-provider API keys are stored in the user's macOS Keychain. Sato calls the
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
 | `CompanionManager.swift` | ~2850 | Central state machine. Owns shortcut monitoring, screen capture, provider routing, overlay management, sprite selection, doze/Auto Sleep lifecycle, context profiles, conversation persistence, and active chat state. Coordinates screenshot questions, streaming responses, and persisted follow-up threads. While the sidebar is open, Ctrl+Option attaches a new screenshot to the next follow-up turn. |
 | `MenuBarPanelManager.swift` | ~465 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the compact companion panel and custom sprite picker, installs click-outside-to-dismiss monitors, and reports panel visibility for Auto Sleep. |
-| `CompanionPanelView.swift` | ~1940 | SwiftUI panel content for the menu bar dropdown, including provider/model settings, bundled and Petdex sprite controls, Auto Sleep, context profiles, previous conversations with pin controls, permissions, feedback, updates, and quit controls. |
+| `CompanionPanelView.swift` | ~1975 | SwiftUI panel content for the menu bar dropdown, including provider/model settings with the effort slider, bundled and Petdex sprite controls, Auto Sleep, the compact context profile menu, previous conversations with pin controls, permissions, feedback, updates, and quit controls. |
 | `CustomSpritePickerView.swift` | ~625 | Dedicated Petdex picker with debounced search, progressive type/mood/sort filters, lazy static previews, creator attribution, pagination, loading/error/empty states, and active-sprite selection. |
 | `PetdexSpriteCatalog.swift` | ~1030 | Petdex search client, response models, trusted-host and redirect validation, hard-capped temporary-file asset downloads, atlas geometry validation, preview loading, and atomic metadata/spritesheet cache under Application Support. |
 | `PetdexSpriteCatalogTests.swift` | ~165 | Focused tests for current response decoding, trusted asset hosts, declared/streamed byte limits, and supported atlas geometry. |
@@ -61,8 +64,10 @@ Remote-provider API keys are stored in the user's macOS Keychain. Sato calls the
 | `ConversationStore.swift` | ~390 | Persists conversation metadata and per-message screenshot files. Retains five recent unpinned threads plus all pinned threads and protects the active thread from pruning. |
 | `OverlayWindow.swift` | ~1880 | Full-screen transparent overlays plus the dedicated chat panel controller. Manages cursor-tracking power gates, non-destructive lifecycle window suspension, resizable left/right docking, floating movement, edge snapping, multi-monitor clamping, and assist flow transitions. |
 | `ChatSidebarView.swift` | ~680 | Responsive docked/floating chat UI with compact latest-response mode, typed or Sato Local follow-up input, full-thread expansion, adaptive Markdown/screenshot wrapping, pending follow-up screenshot previews, and persisted sidebar text-color controls. |
-| `MarkdownRenderer.swift` | ~510 | Parses completed assistant responses into display-safe Markdown blocks and inline attributes. Preserves visible headings, paragraphs, list markers, code blocks, quotes, and readable LaTeX-style math. |
-| `MarkdownResponseView.swift` | ~110 | SwiftUI renderer for completed Markdown response blocks. Gives headers, paragraphs, lists, quotes, and code blocks explicit visual spacing because `Text` does not reliably render Foundation block intents. |
+| `MarkdownRenderer.swift` | ~935 | Parses completed assistant responses into display-safe Markdown blocks, display math blocks, and inline Markdown/math segments. Normalizes math fences, protects code and prices from math parsing, and keeps a readable Unicode fallback for LaTeX. |
+| `MarkdownResponseView.swift` | ~370 | SwiftUI renderer for completed Markdown response blocks. Gives headers, paragraphs, lists, quotes, and code blocks explicit visual spacing, flows typeset inline math on the text baseline, and centers display math with horizontal scrolling. |
+| `MathTypesetter.swift` | ~775 | SwiftMath-backed LaTeX typesetter. Rewrites KaTeX/MathJax-only commands and environments, applies TeX spacing fixes, outlines `\boxed` answers, and caches high-density template images with baseline metrics. |
+| `ReasoningEffortSlider.swift` | ~195 | Draggable, snapping effort slider and the panel row that shows it for the selected model (or notes when a model has no effort control). |
 | `SpeechBubbleView.swift` | ~140 | Speech bubble displaying Claude's response above the sprite. Shows active context profile name as header. Detects content overflow and shows a "Show more" button that opens the chat sidebar. |
 | `SpriteDirection.swift` | ~100 | Eight compass directions for the sprite. Maps angles to directions and resolves which GIF asset to load (with horizontal mirroring for missing directions). |
 | `SpriteAnimationManager.swift` | ~1615 | Manages the companion sprite state machine (resting/flying/assisting/pointing), bundled GIF extraction, off-main Petdex atlas preparation, adaptive 10/30/60 Hz animation power modes, source switching, and direction-based animation selection. |
@@ -74,10 +79,11 @@ Remote-provider API keys are stored in the user's macOS Keychain. Sato calls the
 | `LocalSpeechPreparationPresentationTests.swift` | ~55 | Focused tests for preparation-stage ordering, elapsed-time presentation, and the setup timeout. |
 | `CompanionSleepPolicyTests.swift` | ~270 | Focused tests for Auto Sleep thresholds, doze and full-suspension eligibility, permission-grant restoration, and lifecycle-resume safety. |
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide Ctrl+Option monitor. Owns the listen-only `CGEvent` tap and publishes screenshot-shortcut press/release transitions. |
-| `AIProviders/ProviderManager.swift` | ~185 | Selects the active Anthropic, OpenAI, Ollama Local, or Ollama Cloud provider and model, including context-profile overrides and local Ollama model discovery. |
-| `AIProviders/AnthropicProvider.swift` | ~175 | Direct Anthropic vision and SSE streaming implementation. |
-| `AIProviders/OpenAIProvider.swift` | ~195 | Direct OpenAI vision and streaming implementation. |
-| `AIProviders/OllamaLocalProvider.swift` | ~210 | Local Ollama discovery and streaming implementation. |
+| `AIProviders/ProviderManager.swift` | ~280 | Selects the active Anthropic, OpenAI, Ollama Local, or Ollama Cloud provider and model, including context-profile overrides, per-model effort persistence, and local Ollama model discovery. |
+| `AIProviders/ReasoningEffort.swift` | ~40 | Effort level and per-model effort option types shared by providers and the effort slider. |
+| `AIProviders/AnthropicProvider.swift` | ~240 | Direct Anthropic vision and SSE streaming implementation. Models: Opus 4.7, Sonnet 4.6, Haiku 5.5, each with its supported effort levels and adaptive thinking. |
+| `AIProviders/OpenAIProvider.swift` | ~220 | Direct OpenAI Responses API vision and streaming implementation. Models: GPT-6 Luna and GPT-5.6 Terra with `reasoning.effort`. |
+| `AIProviders/OllamaLocalProvider.swift` | ~250 | Local Ollama discovery (vision and thinking capabilities) and streaming implementation, mapping effort to Ollama's `think` parameter. |
 | `AIProviders/OllamaCloudProvider.swift` | ~150 | Authenticated Ollama Cloud streaming implementation. |
 | `KeychainHelper.swift` | ~90 | Stores remote-provider API keys in the macOS Keychain. |
 | `ClaudeAPI.swift` | ~130 | Legacy direct Anthropic request helper retained for compatibility. |

@@ -2313,6 +2313,8 @@ final class CompanionManager: ObservableObject {
 
     Your replies render in a small speech bubble above the user's sprite, so keep responses concise and skimmable. Aim for under 150 words unless the user explicitly asks for more detail or depth. Favor direct answers over preamble. Skip phrases like "I can see that..." or "Looking at your screen..." — just answer.
 
+    Replies render Markdown and typeset LaTeX math. Write math in LaTeX with $...$ for inline expressions and $$...$$ on their own lines for standalone equations. Write currency as plain text (for example, $5), never inside math delimiters.
+
     When the user asks a follow-up in the chat sidebar, you have access to the full conversation history, including any screenshots attached to earlier turns and any new screenshot attached to the latest turn. Build on that context naturally instead of treating each message as a fresh start.
 
     If the user has set an active Context Profile (provided below), that describes how they want you to behave for this session. Follow it.

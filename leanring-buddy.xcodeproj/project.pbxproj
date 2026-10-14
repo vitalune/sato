@@ -10,6 +10,7 @@
 		AA00BB032F6500030039DA55 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB022F6500020039DA55 /* Sparkle */; };
 		AA00BB062F6500060039DA55 /* PostHog in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB052F6500050039DA55 /* PostHog */; };
 		AA00BB092F6500090039DA55 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB082F6500080039DA55 /* WhisperKit */; };
+		AA00BB0C2F65000C0039DA55 /* SwiftMath in Frameworks */ = {isa = PBXBuildFile; productRef = AA00BB0B2F65000B0039DA55 /* SwiftMath */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -100,6 +101,7 @@
 				AA00BB032F6500030039DA55 /* Sparkle in Frameworks */,
 				AA00BB062F6500060039DA55 /* PostHog in Frameworks */,
 				AA00BB092F6500090039DA55 /* WhisperKit in Frameworks */,
+				AA00BB0C2F65000C0039DA55 /* SwiftMath in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -173,6 +175,7 @@
 				AA00BB022F6500020039DA55 /* Sparkle */,
 				AA00BB052F6500050039DA55 /* PostHog */,
 				AA00BB082F6500080039DA55 /* WhisperKit */,
+				AA00BB0B2F65000B0039DA55 /* SwiftMath */,
 			);
 			productName = "leanring-buddy";
 			productReference = 28F22CBF2F56440300A0FC59 /* Sato.app */;
@@ -260,6 +263,7 @@
 				AA00BB012F6500010039DA55 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				AA00BB042F6500040039DA55 /* XCRemoteSwiftPackageReference "posthog-ios" */,
 				AA00BB072F6500070039DA55 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */,
+				AA00BB0A2F65000A0039DA55 /* XCRemoteSwiftPackageReference "SwiftMath" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 28F22CC02F56440300A0FC59 /* Products */;
@@ -699,6 +703,14 @@
 				minimumVersion = 1.0.0;
 			};
 		};
+		AA00BB0A2F65000A0039DA55 /* XCRemoteSwiftPackageReference "SwiftMath" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mgriebling/SwiftMath";
+			requirement = {
+				kind = revision;
+				revision = 1d2c90827e9c3908269d810d055fb03b7da5fd53;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -716,6 +728,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA00BB072F6500070039DA55 /* XCRemoteSwiftPackageReference "argmax-oss-swift" */;
 			productName = WhisperKit;
+		};
+		AA00BB0B2F65000B0039DA55 /* SwiftMath */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA00BB0A2F65000A0039DA55 /* XCRemoteSwiftPackageReference "SwiftMath" */;
+			productName = SwiftMath;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

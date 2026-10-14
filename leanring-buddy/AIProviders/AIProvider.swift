@@ -34,9 +34,12 @@ protocol AIProvider {
 
     func isConfigured() async -> Bool
 
+    /// `reasoningEffort` is the API value of the model's selected
+    /// `ReasoningEffortLevel`, or nil when the model has no effort control.
     func streamChat(
         messages: [AIProviderMessage],
         systemPrompt: String?,
-        model: String
+        model: String,
+        reasoningEffort: String?
     ) -> AsyncThrowingStream<AIProviderChunk, Error>
 }

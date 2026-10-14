@@ -39,6 +39,20 @@ final class ProviderManager: ObservableObject {
     @Published var ollamaLocalModels: [OllamaModelInfo] = []
     @Published var ollamaLocalIsReachable: Bool = false
 
+    /// The effort level the user picked for each model, keyed by
+    /// `reasoningEffortKey(providerID:modelID:)`. Effort is remembered per
+    /// model because each model supports different levels.
+    @Published private var savedReasoningEffortByModelKey: [String: String] {
+        didSet {
+            UserDefaults.standard.set(
+                savedReasoningEffortByModelKey,
+                forKey: Self.reasoningEffortUserDefaultsKey
+            )
+        }
+    }
+
+    private static let reasoningEffortUserDefaultsKey = "reasoningEffortByModel"
+
     // MARK: - Provider Instances
 
     let anthropicProvider = AnthropicProvider()
@@ -70,21 +84,41 @@ final class ProviderManager: ObservableObject {
         currentProvider.supportsVision
     }
 
+    /// Effort levels for the model selected in the panel, or nil when that
+    /// model has no effort control.
+    var currentReasoningEffortOptions: ReasoningEffortOptions? {
+        reasoningEffortOptions(providerID: selectedProviderID, modelID: currentModelID)
+    }
+
+    var currentReasoningEffortLevel: ReasoningEffortLevel? {
+        selectedReasoningEffortLevel(providerID: selectedProviderID, modelID: currentModelID)
+    }
+
+    func setCurrentReasoningEffortLevel(_ reasoningEffortLevel: ReasoningEffortLevel) {
+        savedReasoningEffortByModelKey[
+            Self.reasoningEffortKey(providerID: selectedProviderID, modelID: currentModelID)
+        ] = reasoningEffortLevel.apiValue
+    }
+
     // MARK: - Init
 
     init() {
         let savedOpenAIModelID = UserDefaults.standard.string(forKey: "openAIModel")
+        let savedAnthropicModelID = UserDefaults.standard.string(forKey: "anthropicModel")
         self.selectedProviderID = UserDefaults.standard.string(forKey: "selectedProvider") ?? "anthropic"
-        self.anthropicModelID = UserDefaults.standard.string(forKey: "anthropicModel") ?? AnthropicProvider.defaultModelID
+        self.anthropicModelID = AnthropicProvider.resolvedModelID(savedAnthropicModelID)
         self.openAIModelID = OpenAIProvider.resolvedModelID(savedOpenAIModelID)
         self.ollamaLocalModelName = UserDefaults.standard.string(forKey: "ollamaLocalModel") ?? ""
         self.ollamaCloudModelName = UserDefaults.standard.string(forKey: "ollamaCloudModel") ?? OllamaCloudProvider.defaultModelID
+        self.savedReasoningEffortByModelKey = UserDefaults.standard.dictionary(
+            forKey: Self.reasoningEffortUserDefaultsKey
+        ) as? [String: String] ?? [:]
 
         // Migrate from the old single-model UserDefaults key if the user
         // has never picked a provider (first launch after update)
         if UserDefaults.standard.string(forKey: "selectedProvider") == nil {
             if let legacyModel = UserDefaults.standard.string(forKey: "selectedClaudeModel") {
-                anthropicModelID = legacyModel
+                anthropicModelID = AnthropicProvider.resolvedModelID(legacyModel)
             }
         }
 
@@ -95,6 +129,52 @@ final class ProviderManager: ObservableObject {
         if savedOpenAIModelID != openAIModelID {
             UserDefaults.standard.set(openAIModelID, forKey: "openAIModel")
         }
+
+        if savedAnthropicModelID != anthropicModelID {
+            UserDefaults.standard.set(anthropicModelID, forKey: "anthropicModel")
+        }
+    }
+
+    // MARK: - Reasoning Effort
+
+    private static func reasoningEffortKey(providerID: String, modelID: String) -> String {
+        "\(providerID)|\(modelID)"
+    }
+
+    /// The effort levels a specific model supports, or nil when the model
+    /// has no effort control.
+    func reasoningEffortOptions(providerID: String, modelID: String) -> ReasoningEffortOptions? {
+        switch providerID {
+        case "openai":
+            let resolvedOpenAIModelID = OpenAIProvider.resolvedModelID(modelID)
+            return OpenAIProvider.availableModels
+                .first { $0.id == resolvedOpenAIModelID }?
+                .effortOptions
+        case "ollama-local":
+            guard let installedModel = ollamaLocalModels.first(where: { $0.name == modelID }) else {
+                return nil
+            }
+            return OllamaLocalProvider.effortOptions(for: installedModel)
+        case "ollama-cloud":
+            return nil
+        default:
+            let resolvedAnthropicModelID = AnthropicProvider.resolvedModelID(modelID)
+            return AnthropicProvider.availableModels
+                .first { $0.id == resolvedAnthropicModelID }?
+                .effortOptions
+        }
+    }
+
+    /// The saved effort level for a model, falling back to the model's
+    /// default when the user has not picked one.
+    func selectedReasoningEffortLevel(providerID: String, modelID: String) -> ReasoningEffortLevel? {
+        guard let effortOptions = reasoningEffortOptions(providerID: providerID, modelID: modelID) else {
+            return nil
+        }
+        let savedAPIValue = savedReasoningEffortByModelKey[
+            Self.reasoningEffortKey(providerID: providerID, modelID: modelID)
+        ]
+        return effortOptions.level(forSavedAPIValue: savedAPIValue)
     }
 
     // MARK: - Provider for Context Profile Overrides
@@ -114,9 +194,15 @@ final class ProviderManager: ObservableObject {
         }
 
         let overrideProvider = provider(forProviderID: overrideProviderID)
-        let resolvedOverrideModelID = overrideProviderID == "openai"
-            ? OpenAIProvider.resolvedModelID(overrideModelID)
-            : overrideModelID
+        let resolvedOverrideModelID: String
+        switch overrideProviderID {
+        case "openai":
+            resolvedOverrideModelID = OpenAIProvider.resolvedModelID(overrideModelID)
+        case "anthropic":
+            resolvedOverrideModelID = AnthropicProvider.resolvedModelID(overrideModelID)
+        default:
+            resolvedOverrideModelID = overrideModelID
+        }
         return (overrideProvider, resolvedOverrideModelID)
     }
 
@@ -161,11 +247,19 @@ final class ProviderManager: ObservableObject {
             ollamaLocal.updateSelectedModel(name: resolvedModelID, supportsVision: supportsVision)
         }
 
+        // Effort is looked up for the model that will actually answer, so a
+        // context profile's model override uses that model's own effort.
+        let reasoningEffortLevel = selectedReasoningEffortLevel(
+            providerID: resolvedProvider.id,
+            modelID: resolvedModelID
+        )
+
         var accumulatedText = ""
         let stream = resolvedProvider.streamChat(
             messages: messages,
             systemPrompt: systemPrompt,
-            model: resolvedModelID
+            model: resolvedModelID,
+            reasoningEffort: reasoningEffortLevel?.apiValue
         )
 
         for try await chunk in stream {
