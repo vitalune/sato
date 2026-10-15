@@ -749,6 +749,9 @@ struct CompanionPanelView: View {
             default:
                 anthropicSettingsSection
             }
+
+            ReasoningEffortSettingRow(providerManager: companionManager.providerManager)
+                .padding(.top, 2)
         }
         .padding(.vertical, 4)
     }
@@ -1250,130 +1253,63 @@ struct CompanionPanelView: View {
 
     // MARK: - Context Profiles
 
+    /// One header row with a profile menu, instead of an always-expanded
+    /// list, so profiles take minimal space in the panel. The editor still
+    /// opens inline below the row when creating or editing a profile.
     private var contextProfilesSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("CONTEXT PROFILES")
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                .foregroundColor(DS.Colors.textTertiary)
-
-            // Active profile indicator
-            if let activeProfile = companionManager.contextManager.activeProfile {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(DS.Colors.success)
-                        .frame(width: 6, height: 6)
-                    Text("Active: \(activeProfile.name)")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(DS.Colors.success)
-                }
-            } else {
-                Text("No active profile")
-                    .font(.system(size: 11, weight: .medium))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("CONTEXT PROFILE")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
                     .foregroundColor(DS.Colors.textTertiary)
+
+                Spacer()
+
+                if !isEditingProfile {
+                    ContextProfileMenu(
+                        contextManager: companionManager.contextManager,
+                        onCreateProfile: beginCreatingProfile,
+                        onEditProfile: beginEditingProfile
+                    )
+                }
             }
 
             if isEditingProfile {
                 profileEditorView
-            } else {
-                profileListView
+            }
+        }
+        .onChange(of: isEditingProfile) { _, _ in
+            // The panel sizes itself to its content, so it needs to re-measure
+            // when the inline editor opens or closes.
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: .clickyPanelContentSizeChanged,
+                    object: nil
+                )
             }
         }
     }
 
-    private var profileListView: some View {
-        VStack(spacing: 4) {
-            ForEach(companionManager.contextManager.profiles) { profile in
-                profileRow(profile: profile)
-            }
-
-            Button(action: {
-                editingProfileID = nil
-                profileNameInput = ""
-                profileDescriptionInput = ""
-                profileInstructionsInput = ""
-                profileUseOverride = false
-                profileOverrideProviderID = "anthropic"
-                profileOverrideModelID = AnthropicProvider.defaultModelID
-                isEditingProfile = true
-            }) {
-                HStack(spacing: 6) {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.system(size: 12, weight: .medium))
-                    Text("New Profile")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .foregroundColor(DS.Colors.accent)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 6)
-            }
-            .buttonStyle(.plain)
-            .pointerCursor()
-        }
+    private func beginCreatingProfile() {
+        editingProfileID = nil
+        profileNameInput = ""
+        profileDescriptionInput = ""
+        profileInstructionsInput = ""
+        profileUseOverride = false
+        profileOverrideProviderID = "anthropic"
+        profileOverrideModelID = AnthropicProvider.defaultModelID
+        isEditingProfile = true
     }
 
-    private func profileRow(profile: ContextProfile) -> some View {
-        HStack(spacing: 8) {
-            // Radio indicator
-            Button(action: {
-                companionManager.contextManager.setActiveProfile(profile.id)
-            }) {
-                Image(systemName: profile.isActive ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(profile.isActive ? DS.Colors.success : DS.Colors.textTertiary)
-            }
-            .buttonStyle(.plain)
-            .pointerCursor()
-
-            // Name + description
-            VStack(alignment: .leading, spacing: 1) {
-                Text(profile.name)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(DS.Colors.textPrimary)
-                Text(profile.description)
-                    .font(.system(size: 10))
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .lineLimit(1)
-            }
-
-            Spacer()
-
-            // Edit button
-            Button(action: {
-                editingProfileID = profile.id
-                profileNameInput = profile.name
-                profileDescriptionInput = profile.description
-                profileInstructionsInput = profile.instructions
-                profileUseOverride = profile.overrideProviderID != nil
-                profileOverrideProviderID = profile.overrideProviderID ?? "anthropic"
-                profileOverrideModelID = profile.overrideModelID ?? AnthropicProvider.defaultModelID
-                isEditingProfile = true
-            }) {
-                Image(systemName: "pencil")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .frame(width: 20, height: 20)
-            }
-            .buttonStyle(.plain)
-            .pointerCursor()
-
-            // Delete button
-            Button(action: {
-                companionManager.contextManager.deleteProfile(id: profile.id)
-            }) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundColor(DS.Colors.textTertiary)
-                    .frame(width: 20, height: 20)
-            }
-            .buttonStyle(.plain)
-            .pointerCursor()
-        }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(profile.isActive ? Color.white.opacity(0.06) : Color.clear)
-        )
+    private func beginEditingProfile(_ profile: ContextProfile) {
+        editingProfileID = profile.id
+        profileNameInput = profile.name
+        profileDescriptionInput = profile.description
+        profileInstructionsInput = profile.instructions
+        profileUseOverride = profile.overrideProviderID != nil
+        profileOverrideProviderID = profile.overrideProviderID ?? "anthropic"
+        profileOverrideModelID = profile.overrideModelID ?? AnthropicProvider.defaultModelID
+        isEditingProfile = true
     }
 
     private var profileEditorView: some View {
@@ -1798,6 +1734,97 @@ struct CompanionPanelView: View {
         return "Active"
     }
 
+}
+
+/// Compact context profile picker: the label shows the active profile, and
+/// the menu switches profiles and creates, edits, or deletes them. It observes
+/// `ContextManager` directly so the label updates as soon as the active
+/// profile changes.
+private struct ContextProfileMenu: View {
+    @ObservedObject var contextManager: ContextManager
+    let onCreateProfile: () -> Void
+    let onEditProfile: (ContextProfile) -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Menu {
+            if !contextManager.profiles.isEmpty {
+                Picker("Active Profile", selection: activeProfileSelection) {
+                    ForEach(contextManager.profiles) { profile in
+                        Text(profile.name).tag(Optional(profile.id))
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+
+                Divider()
+            }
+
+            Button("New Profile…", action: onCreateProfile)
+
+            if !contextManager.profiles.isEmpty {
+                Menu("Edit Profile") {
+                    ForEach(contextManager.profiles) { profile in
+                        Button(profile.name) {
+                            onEditProfile(profile)
+                        }
+                    }
+                }
+
+                Menu("Delete Profile") {
+                    ForEach(contextManager.profiles) { profile in
+                        Button(profile.name, role: .destructive) {
+                            contextManager.deleteProfile(id: profile.id)
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(contextManager.activeProfile == nil ? DS.Colors.textTertiary : DS.Colors.success)
+                    .frame(width: 6, height: 6)
+
+                Text(contextManager.activeProfile?.name ?? "None")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textPrimary)
+                    .lineLimit(1)
+
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(isHovering ? 0.1 : 0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .pointerCursor()
+        .onHover { isHovering = $0 }
+        .help(contextManager.activeProfile?.description ?? "Choose how Sato should behave")
+    }
+
+    private var activeProfileSelection: Binding<UUID?> {
+        Binding(
+            get: { contextManager.activeProfile?.id },
+            set: { newActiveProfileID in
+                if let newActiveProfileID {
+                    contextManager.setActiveProfile(newActiveProfileID)
+                }
+            }
+        )
+    }
 }
 
 private struct PreviousConversationsSection: View {

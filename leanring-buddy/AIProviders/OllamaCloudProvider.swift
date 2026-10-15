@@ -34,7 +34,8 @@ final class OllamaCloudProvider: AIProvider {
     func streamChat(
         messages: [AIProviderMessage],
         systemPrompt: String?,
-        model: String
+        model: String,
+        reasoningEffort: String?
     ) -> AsyncThrowingStream<AIProviderChunk, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -74,11 +75,14 @@ final class OllamaCloudProvider: AIProvider {
                     }
 
                     let modelToUse = model.isEmpty ? Self.defaultModelID : model
-                    let body: [String: Any] = [
+                    var body: [String: Any] = [
                         "model": modelToUse,
                         "messages": ollamaMessages,
                         "stream": true,
                     ]
+                    if let reasoningEffort {
+                        body["think"] = OllamaLocalProvider.thinkParameterValue(forReasoningEffort: reasoningEffort)
+                    }
 
                     let bodyData = try JSONSerialization.data(withJSONObject: body)
                     request.httpBody = bodyData

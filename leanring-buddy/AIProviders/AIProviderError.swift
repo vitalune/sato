@@ -14,6 +14,7 @@ enum AIProviderError: LocalizedError {
     case providerUnavailable(provider: String, reason: String)
     case modelDoesNotSupportVision(modelName: String)
     case quotaExceeded(provider: String)
+    case responseDeclined(provider: String)
 
     var errorDescription: String? {
         switch self {
@@ -38,6 +39,8 @@ enum AIProviderError: LocalizedError {
                 return "OpenAI account has no credits remaining — add funds at platform.openai.com/billing"
             }
             return "\(provider) account has no credits remaining."
+        case .responseDeclined(let provider):
+            return "\(provider) declined to answer this request. Try rephrasing it or choosing a different model."
         }
     }
 }

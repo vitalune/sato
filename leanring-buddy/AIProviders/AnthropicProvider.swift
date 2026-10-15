@@ -12,6 +12,7 @@ import Foundation
 struct AnthropicModel {
     let id: String
     let displayName: String
+    let effortOptions: ReasoningEffortOptions
 }
 
 final class AnthropicProvider: AIProvider {
@@ -19,13 +20,58 @@ final class AnthropicProvider: AIProvider {
     let displayName = "Anthropic"
     let supportsVision = true
 
+    // Effort levels follow Anthropic's per-model support: `xhigh` exists on
+    // Opus 4.7 and Haiku 5.5 but not on Sonnet 4.6. Medium is the default so
+    // quick screen questions stay fast until the user asks for more effort.
     static let availableModels = [
-        AnthropicModel(id: "claude-opus-4-7", displayName: "Claude Opus 4.7"),
-        AnthropicModel(id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6"),
-        AnthropicModel(id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5"),
+        AnthropicModel(
+            id: "claude-opus-4-7",
+            displayName: "Claude Opus 4.7",
+            effortOptions: ReasoningEffortOptions(
+                levels: [.low, .medium, .high, .extraHigh, .max],
+                defaultLevel: .medium
+            )
+        ),
+        AnthropicModel(
+            id: "claude-sonnet-4-6",
+            displayName: "Claude Sonnet 4.6",
+            effortOptions: ReasoningEffortOptions(
+                levels: [.low, .medium, .high, .max],
+                defaultLevel: .medium
+            )
+        ),
+        AnthropicModel(
+            id: "claude-haiku-5-5",
+            displayName: "Claude Haiku 5.5",
+            effortOptions: ReasoningEffortOptions(
+                levels: [.low, .medium, .high, .extraHigh, .max],
+                defaultLevel: .medium
+            )
+        ),
     ]
 
     static let defaultModelID = "claude-sonnet-4-6"
+
+    /// Models that were removed from the picker and the model that replaces them.
+    private static let replacementModelIDsForRemovedModels = [
+        "claude-haiku-4-5": "claude-haiku-5-5",
+    ]
+
+    /// Maps saved selections (including removed models such as Haiku 4.5) to a
+    /// model that is still offered, so existing settings and context profile
+    /// overrides keep working after an update.
+    static func resolvedModelID(_ requestedModelID: String?) -> String {
+        guard let requestedModelID else { return defaultModelID }
+
+        if availableModels.contains(where: { $0.id == requestedModelID }) {
+            return requestedModelID
+        }
+        return replacementModelIDsForRemovedModels[requestedModelID] ?? defaultModelID
+    }
+
+    /// Thinking tokens count toward `max_tokens`, so the cap leaves room for
+    /// high-effort reasoning before the visible answer.
+    private static let maximumOutputTokens = 64_000
 
     func isConfigured() async -> Bool {
         guard let key = KeychainHelper.loadAPIKey(for: .anthropic) else { return false }
@@ -35,7 +81,8 @@ final class AnthropicProvider: AIProvider {
     func streamChat(
         messages: [AIProviderMessage],
         systemPrompt: String?,
-        model: String
+        model: String,
+        reasoningEffort: String?
     ) -> AsyncThrowingStream<AIProviderChunk, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -50,7 +97,7 @@ final class AnthropicProvider: AIProvider {
 
                     var request = URLRequest(url: apiURL)
                     request.httpMethod = "POST"
-                    request.timeoutInterval = 120
+                    request.timeoutInterval = 300
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
                     request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
@@ -89,23 +136,32 @@ final class AnthropicProvider: AIProvider {
 
                     var body: [String: Any] = [
                         "model": model,
-                        "max_tokens": 1024,
+                        "max_tokens": Self.maximumOutputTokens,
                         "stream": true,
                         "messages": apiMessages,
                     ]
                     if let systemPrompt, !systemPrompt.isEmpty {
                         body["system"] = systemPrompt
                     }
+                    if let reasoningEffort {
+                        // Adaptive thinking lets the model decide how much to
+                        // think, and effort sets how deep it goes. Opus 4.7
+                        // and Sonnet 4.6 only think when adaptive is explicit.
+                        body["thinking"] = ["type": "adaptive"]
+                        body["output_config"] = ["effort": reasoningEffort]
+                    }
 
                     let bodyData = try JSONSerialization.data(withJSONObject: body)
                     request.httpBody = bodyData
 
                     let payloadMB = Double(bodyData.count) / 1_048_576.0
-                    print("🌐 Anthropic streaming request: \(String(format: "%.1f", payloadMB))MB, model: \(model)")
+                    print("🌐 Anthropic streaming request: \(String(format: "%.1f", payloadMB))MB, model: \(model), effort: \(reasoningEffort ?? "default")")
 
+                    // High effort can think for several minutes before the
+                    // first visible text, so the overall limit is generous.
                     let config = URLSessionConfiguration.default
-                    config.timeoutIntervalForRequest = 120
-                    config.timeoutIntervalForResource = 300
+                    config.timeoutIntervalForRequest = 300
+                    config.timeoutIntervalForResource = 900
                     config.urlCache = nil
                     let session = URLSession(configuration: config)
 
@@ -144,6 +200,8 @@ final class AnthropicProvider: AIProvider {
                             continue
                         }
 
+                        // Thinking blocks stream as `thinking_delta` events and
+                        // are skipped; only the visible answer is shown.
                         if eventType == "content_block_delta",
                            let delta = eventPayload["delta"] as? [String: Any],
                            let deltaType = delta["type"] as? String,
@@ -151,6 +209,15 @@ final class AnthropicProvider: AIProvider {
                            let textChunk = delta["text"] as? String
                         {
                             continuation.yield(.textDelta(textChunk))
+                        } else if eventType == "message_delta",
+                                  let delta = eventPayload["delta"] as? [String: Any],
+                                  delta["stop_reason"] as? String == "refusal"
+                        {
+                            // Newer models can decline through safety
+                            // classifiers; without this the bubble stays empty.
+                            continuation.yield(.error(AIProviderError.responseDeclined(provider: "Claude")))
+                            continuation.finish()
+                            return
                         }
                     }
 

@@ -11,6 +11,7 @@ import Foundation
 struct OpenAIModel {
     let id: String
     let displayName: String
+    let effortOptions: ReasoningEffortOptions
 }
 
 final class OpenAIProvider: AIProvider {
@@ -18,12 +19,28 @@ final class OpenAIProvider: AIProvider {
     let displayName = "OpenAI"
     let supportsVision = true
 
+    // Both models accept every `reasoning.effort` level from `none` through
+    // `max`; medium is OpenAI's default for both.
     static let availableModels = [
-        OpenAIModel(id: "gpt-5.6-luna", displayName: "GPT-5.6 Luna"),
-        OpenAIModel(id: "gpt-5.6-terra", displayName: "GPT-5.6 Terra"),
+        OpenAIModel(
+            id: "gpt-6-luna",
+            displayName: "GPT-6 Luna",
+            effortOptions: ReasoningEffortOptions(
+                levels: [.none, .low, .medium, .high, .extraHigh, .max],
+                defaultLevel: .medium
+            )
+        ),
+        OpenAIModel(
+            id: "gpt-5.6-terra",
+            displayName: "GPT-5.6 Terra",
+            effortOptions: ReasoningEffortOptions(
+                levels: [.none, .low, .medium, .high, .extraHigh, .max],
+                defaultLevel: .medium
+            )
+        ),
     ]
 
-    static let defaultModelID = "gpt-5.6-luna"
+    static let defaultModelID = "gpt-6-luna"
 
     static func resolvedModelID(_ requestedModelID: String?) -> String {
         guard let requestedModelID,
@@ -44,7 +61,8 @@ final class OpenAIProvider: AIProvider {
     func streamChat(
         messages: [AIProviderMessage],
         systemPrompt: String?,
-        model: String
+        model: String,
+        reasoningEffort: String?
     ) -> AsyncThrowingStream<AIProviderChunk, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -57,7 +75,7 @@ final class OpenAIProvider: AIProvider {
 
                     var request = URLRequest(url: baseURL)
                     request.httpMethod = "POST"
-                    request.timeoutInterval = 120
+                    request.timeoutInterval = 600
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
@@ -104,16 +122,21 @@ final class OpenAIProvider: AIProvider {
                     if let systemPrompt, !systemPrompt.isEmpty {
                         body["instructions"] = systemPrompt
                     }
+                    if let reasoningEffort {
+                        body["reasoning"] = ["effort": reasoningEffort]
+                    }
 
                     let bodyData = try JSONSerialization.data(withJSONObject: body)
                     request.httpBody = bodyData
 
                     let payloadMB = Double(bodyData.count) / 1_048_576.0
-                    print("🌐 OpenAI streaming request: \(String(format: "%.1f", payloadMB))MB, model: \(model)")
+                    print("🌐 OpenAI streaming request: \(String(format: "%.1f", payloadMB))MB, model: \(model), effort: \(reasoningEffort ?? "default")")
 
+                    // The Responses stream can stay quiet while the model
+                    // reasons at high effort, so both limits are generous.
                     let config = URLSessionConfiguration.default
-                    config.timeoutIntervalForRequest = 120
-                    config.timeoutIntervalForResource = 300
+                    config.timeoutIntervalForRequest = 600
+                    config.timeoutIntervalForResource = 900
                     config.urlCache = nil
                     let session = URLSession(configuration: config)
 

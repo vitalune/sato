@@ -13,6 +13,7 @@ struct OllamaModelInfo: Identifiable {
     let name: String
     let sizeInBytes: Int64
     var supportsVision: Bool
+    var supportsThinking: Bool
 }
 
 final class OllamaLocalProvider: AIProvider {
@@ -31,6 +32,32 @@ final class OllamaLocalProvider: AIProvider {
     func updateSelectedModel(name: String, supportsVision: Bool) {
         selectedModelName = name
         selectedModelSupportsVision = supportsVision
+    }
+
+    /// Effort control for an installed model, based on the capabilities the
+    /// local daemon reports. gpt-oss accepts low/medium/high thinking levels;
+    /// other thinking models can only switch thinking off or on. Models that
+    /// cannot think have no effort control.
+    static func effortOptions(for model: OllamaModelInfo) -> ReasoningEffortOptions? {
+        guard model.supportsThinking else { return nil }
+
+        if model.name.hasPrefix("gpt-oss") {
+            return ReasoningEffortOptions(levels: [.low, .medium, .high], defaultLevel: .medium)
+        }
+        return ReasoningEffortOptions(levels: [.thinkingOff, .thinkingOn], defaultLevel: .thinkingOn)
+    }
+
+    /// Converts an effort level into Ollama's `think` parameter, which takes
+    /// a level name for gpt-oss and a boolean for every other thinking model.
+    static func thinkParameterValue(forReasoningEffort reasoningEffort: String) -> Any {
+        switch reasoningEffort {
+        case ReasoningEffortLevel.thinkingOff.apiValue:
+            return false
+        case ReasoningEffortLevel.thinkingOn.apiValue:
+            return true
+        default:
+            return reasoningEffort
+        }
     }
 
     func isConfigured() async -> Bool {
@@ -63,13 +90,19 @@ final class OllamaLocalProvider: AIProvider {
         for modelDict in modelsArray {
             guard let name = modelDict["name"] as? String else { continue }
             let size = modelDict["size"] as? Int64 ?? 0
-            let hasVision = await modelSupportsVision(name)
-            models.append(OllamaModelInfo(name: name, sizeInBytes: size, supportsVision: hasVision))
+            let capabilities = await modelCapabilities(name)
+            models.append(OllamaModelInfo(
+                name: name,
+                sizeInBytes: size,
+                supportsVision: capabilities.contains("vision"),
+                supportsThinking: capabilities.contains("thinking")
+            ))
         }
         return models
     }
 
-    func modelSupportsVision(_ modelName: String) async -> Bool {
+    /// Capability names reported by `/api/show`, such as "vision" and "thinking".
+    func modelCapabilities(_ modelName: String) async -> [String] {
         let url = baseURL.appendingPathComponent("api/show")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -82,18 +115,19 @@ final class OllamaLocalProvider: AIProvider {
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let capabilities = json["capabilities"] as? [String]
             else {
-                return false
+                return []
             }
-            return capabilities.contains("vision")
+            return capabilities
         } catch {
-            return false
+            return []
         }
     }
 
     func streamChat(
         messages: [AIProviderMessage],
         systemPrompt: String?,
-        model: String
+        model: String,
+        reasoningEffort: String?
     ) -> AsyncThrowingStream<AIProviderChunk, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -136,16 +170,21 @@ final class OllamaLocalProvider: AIProvider {
                     }
 
                     let modelToUse = model.isEmpty ? self.selectedModelName : model
-                    let body: [String: Any] = [
+                    var body: [String: Any] = [
                         "model": modelToUse,
                         "messages": ollamaMessages,
                         "stream": true,
                     ]
+                    // With `think` set, Ollama returns reasoning in a separate
+                    // `thinking` field, so `content` stays the visible answer.
+                    if let reasoningEffort {
+                        body["think"] = Self.thinkParameterValue(forReasoningEffort: reasoningEffort)
+                    }
 
                     let bodyData = try JSONSerialization.data(withJSONObject: body)
                     request.httpBody = bodyData
 
-                    print("🌐 Ollama Local streaming request, model: \(modelToUse)")
+                    print("🌐 Ollama Local streaming request, model: \(modelToUse), effort: \(reasoningEffort ?? "default")")
 
                     let config = URLSessionConfiguration.default
                     config.timeoutIntervalForRequest = 300

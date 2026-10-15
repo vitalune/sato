@@ -45,6 +45,14 @@
         "revision" : "6a52f3251125d74daf04fcbd5e6f08a75d074382",
         "version" : "1.8.2"
       }
+    },
+    {
+      "identity" : "swiftmath",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mgriebling/SwiftMath",
+      "state" : {
+        "revision" : "1d2c90827e9c3908269d810d055fb03b7da5fd53"
+      }
     }
   ],
   "version" : 3
