@@ -6,6 +6,15 @@
         <description>Most recent updates to Sato</description>
         <language>en</language>
         <item>
+            <title>1.4.0</title>
+            <pubDate>Thu, 15 Oct 2026 02:39:35 -0400</pubDate>
+            <sparkle:version>10400</sparkle:version>
+            <sparkle:shortVersionString>1.4.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
+            <sparkle:releaseNotesLink>https://sato.host/Sato-1.4.0.md</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/vitalune/sato/releases/download/v1.4.0/Sato-1.4.0.dmg" length="70795830" type="application/octet-stream" sparkle:edSignature="Y8KDUMnfsGd/Pr03Y5Vt8nFr7tdGSYfcNnUgDwVaui4MYs0EkgHG2ORfxTlDi6O18n4uKeQ9shS8xD+GVjWeAg=="/>
+        </item>
+        <item>
             <title>1.3.0</title>
             <pubDate>Sat, 29 Aug 2026 16:11:34 -0400</pubDate>
             <sparkle:version>10300</sparkle:version>
@@ -21,19 +30,6 @@
             <sparkle:shortVersionString>1.2.8</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/vitalune/sato/releases/download/v1.2.8/Sato-1.2.8.dmg" length="65573242" type="application/octet-stream" sparkle:edSignature="A6HwApecQtbKseAWInZKxlc6ZNaK+6Uk/DrLosfiJvlzP1KRby518hRDRb5YCS2DCZiHXi5ZNOZZ0R1K02ayDQ=="/>
-        </item>
-        <item>
-            <title>Version 1.1.1</title>
-            <pubDate>Sat, 25 Apr 2026 13:58:05 -0400</pubDate>
-            <sparkle:version>10101</sparkle:version>
-            <sparkle:shortVersionString>1.1.1</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.2</sparkle:minimumSystemVersion>
-            <description><![CDATA[
-                <h2>Update metadata fix</h2>
-                <p>Quick fix release. v1.1.0's auto-updater metadata didn't match the appcast feed, which made some users see "update available" prompts even after installing v1.1.0. v1.1.1 corrects this — once you're on v1.1.1, the prompt stops.</p>
-                <p>No feature changes from v1.1.0. Pure metadata cleanup.</p>
-            ]]></description>
-            <enclosure url="https://github.com/vitalune/sato/releases/download/v1.1.1/Sato-1.1.1.dmg" length="66034198" type="application/octet-stream" sparkle:edSignature="GMqi3D5ZeRWXz0+6Re8gW1SsNbyj2hsMO2qEQo1hOrWwIKCpZ0OIZS1Gz97tRNylIICTL8OliASW8MvwMFJxBA=="/>
         </item>
     </channel>
 </rss>
